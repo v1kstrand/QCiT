@@ -19,10 +19,7 @@ import torch.nn.functional as F
 import numpy as np
 
 
-#!pip install ipywidgets -q
-
-# # Utils
-# In[2]:
+SDP_KERNEL_THRESHOLD = 100  # threshold for using flash attention, if sequence length is larger than this, use flash attention
 
 
 class FlashNormLinear(nn.Linear):
@@ -117,7 +114,7 @@ class CompressorBlock(nn.Module):
         self.attn_drop = attn_drop
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.size(1) > self.sdp_kernel_threshold:
+        if x.size(1) > SDP_KERNEL_THRESHOLD: 
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
@@ -179,7 +176,7 @@ class Attention(nn.Module):
         self.sdp_kernel_threshold = sdp_kernel_threshold
         
     def forward(self, x: Tensor) -> Tensor:
-        if x.size(1) > self.sdp_kernel_threshold:
+        if x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
