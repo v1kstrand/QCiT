@@ -6,6 +6,7 @@ from torch import nn
 
 @torch.no_grad()
 def init_weights(m):
+    """Initialize weights for various layers."""
     if isinstance(m, nn.Linear):
         nn.init.trunc_normal_(m.weight, std=0.02)
         if isinstance(m, nn.Linear) and m.bias is not None:
