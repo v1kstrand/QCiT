@@ -117,7 +117,7 @@ class CompressorBlock(nn.Module):
         self.attn_drop = attn_drop
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.shape(1) > self.sdp_kernel_threshold:
+        if x.size(1) > self.sdp_kernel_threshold:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
@@ -179,7 +179,7 @@ class Attention(nn.Module):
         self.sdp_kernel_threshold = sdp_kernel_threshold
         
     def forward(self, x: Tensor) -> Tensor:
-        if x.shape(1) > self.sdp_kernel_threshold:
+        if x.size(1) > self.sdp_kernel_threshold:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
