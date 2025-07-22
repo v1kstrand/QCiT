@@ -612,6 +612,7 @@ class QCiT(nn.Module):
             )
         self.blocks = nn.ModuleList(blocks_list)
         if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
+            print(f"DEBUG QCiT: Setting out_dim to {embed_dim}")
             self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
             self.norm = norm_layer(embed_dim)
         else:
