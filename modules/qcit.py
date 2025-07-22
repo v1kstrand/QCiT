@@ -466,6 +466,7 @@ class QCiT(nn.Module):
         in_chans=3,
         embed_dim=384,
         num_heads=6,
+        depth=None,
         mlp_ratio=4.0,
         qkv_bias=False,
         ffn_bias=True,
@@ -507,6 +508,8 @@ class QCiT(nn.Module):
         self.p_token_drop = token_drop
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
+        if depth is not None:
+            print(f"INFO QCiT: Depth ({depth}) is ignored, using num_stages={num_stages} * blocks_per_stage={blocks_per_stage}")
 
         self.patch_embed = embed_layer(
             img_size=img_size,
