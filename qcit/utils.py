@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from timm.data import Mixup
-from contextvit.config import MEAN, STD
+from qcit.config import MEAN, STD
 
 def get_time(get_date=False):
     time_str = "%d-%m-%Y_%H:%M:%S" if get_date else "%H:%M:%S" 

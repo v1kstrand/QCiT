@@ -5,16 +5,14 @@ from torch import nn
 import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
-
-from modules.cls_dep_proj_ctx_att import ClsDepProjCtxAttnVit 
-from modules.qvit import QCiT
-from modules.vit import VisionTransformer as ViT
+from modules.qcit import QCiT
+from modules.vit import ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min
 
 
-def get_vit(arc):
+def get_arc(arc):
     return {"vit" : ViT,
             "qcit": QCiT,}[arc]
             
@@ -22,7 +20,7 @@ def get_vit(arc):
 class InnerModel(nn.Module):
     def __init__(self, args, kw):
         super().__init__()
-        arc = get_vit(kw["arc"]) 
+        arc = get_arc(kw["arc"]) 
         self.model = get_encoder(arc, args, kw)
         self.clsf_out = nn.Linear(args.vkw["d"], NUM_CLASSES)
         self.criterion = SoftTargetCrossEntropy()
