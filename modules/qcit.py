@@ -114,7 +114,7 @@ class CompressorBlock(nn.Module):
         self.attn_drop = attn_drop
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.size(1) > SDP_KERNEL_THRESHOLD: 
+        if x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
@@ -477,6 +477,7 @@ class QCiT(nn.Module):
         n_registers=0,
         flash_mlp=False,
         return_cls_only=True,
+        out_dim=None,
     ):
         """
         Args:
@@ -610,7 +611,12 @@ class QCiT(nn.Module):
                 )
             )
         self.blocks = nn.ModuleList(blocks_list)
-        self.norm = norm_layer(compressor_config[-1]["input_dim"])
+        if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
+            self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.out_proj = nn.Identity()
+            self.norm = norm_layer(compressor_config[-1]["input_dim"])
         self.init_weights()
 
     def init_weights(self):
@@ -644,8 +650,9 @@ class QCiT(nn.Module):
         x = self.prepare_tokens(x)
         for blk in self.blocks:
             x = blk(x)
-        with torch.profiler.record_function("Final Norm"):
-            out = self.norm(x)
+        
+        with torch.profiler.record_function("Final Proj and Norm"):
+            out = self.norm(self.out_proj(x))
         return out[:, 0, :] if self.return_cls_only else out
 
 
