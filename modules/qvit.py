@@ -13,6 +13,7 @@ from pprint import pprint
 import torch
 from torch import nn
 from torch.nn.init import trunc_normal_
+from torch.nn.attention import SDPBackend
 from torch import Tensor
 import torch.nn.functional as F
 import numpy as np
@@ -115,7 +116,16 @@ class CompressorBlock(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_drop = attn_drop
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
+        if x.shape(1) > self.sdp_kernel_threshold:
+            sdp_kernel = SDPBackend.FLASH_ATTENTION
+        else:
+            sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
+            
+        with torch.nn.attention.sdpa_kernel(sdp_kernel):
+            return self._forward(x)
+
+    def _forward(self, x: Tensor) -> Tensor:
         """
         x: [B, L, input_dim]
         Returns: [B, M, output_dim]
@@ -157,6 +167,7 @@ class Attention(nn.Module):
         proj_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        sdp_kernel_threshold = 100,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
@@ -165,8 +176,18 @@ class Attention(nn.Module):
         self.attn_drop = attn_drop
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
-
+        self.sdp_kernel_threshold = sdp_kernel_threshold
+        
     def forward(self, x: Tensor) -> Tensor:
+        if x.shape(1) > self.sdp_kernel_threshold:
+            sdp_kernel = SDPBackend.FLASH_ATTENTION
+        else:
+            sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
+            
+        with torch.nn.attention.sdpa_kernel(sdp_kernel):
+            return self._forward(x)
+
+    def _forward(self, x: Tensor) -> Tensor:
         B, N, _ = x.shape
         H, D = self.num_heads, self.head_dim
 
@@ -433,7 +454,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class QCit(nn.Module):
+class QCiT(nn.Module):
     def __init__(
         self,
         head_add,
@@ -528,7 +549,7 @@ class QCit(nn.Module):
             output_dims = [h * head_dim for h in num_heads]
             if initial_dim is None:
                 initial_dim = initial_heads * head_dim
-            input_dims = [initial_dim] + output_dims[:-1]  # Offset by 1
+            input_dims = [initial_dim] + output_dims[:-1]
 
             print(f"Input_dim: {initial_dim}, num_heads: {num_heads}, tokens: {tokens}")
 

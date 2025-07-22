@@ -70,7 +70,6 @@ def set_torch_config():
     inductor_config.cpp.enable_floating_point_contract_flag = "fast"
 
     inductor_config.b2b_gemm_pass = True
-    inductor_config.cuda.cutlass_backend_min_gemm_size = 64 * 64 * 64
 
     # Turn on unsafe-math for speed (be aware: may break strict IEEE)
     inductor_config.cpp.enable_unsafe_math_opt_flag = True

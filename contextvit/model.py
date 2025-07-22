@@ -5,11 +5,10 @@ from torch import nn
 import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
-from modules.context_vit_v3 import LinearContextViTv3 
-from modules.context_vit_v4_1 import LinearContextViTv4
+
 from modules.cls_dep_proj_ctx_att import ClsDepProjCtxAttnVit 
-from modules.qvit import ClsDepProjOrgAttnVit
-from modules.dinov2 import DinoVisionTransformer as ViT
+from modules.qvit import QCiT
+from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min
@@ -17,10 +16,7 @@ from .utils import to_min
 
 def get_vit(arc):
     return {"vit" : ViT,
-            "citv3" : LinearContextViTv3,
-            "citv4" : LinearContextViTv4,
-            "ClsDepProjCtxAttn": ClsDepProjCtxAttnVit,
-            "ClsDepProjOrgAttn" : ClsDepProjOrgAttnVit}[arc]
+            "qcit": QCiT,}[arc]
             
 
 class InnerModel(nn.Module):

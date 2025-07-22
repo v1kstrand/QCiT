@@ -339,7 +339,7 @@ def init_weights_vit_timm(module: nn.Module, name: str = ""):
         nn.init.constant_(module.weight, 1.0)
 
 
-class DinoVisionTransformer(nn.Module):
+class VisionTransformer(nn.Module):
     def __init__(
         self,
         img_size=224,
