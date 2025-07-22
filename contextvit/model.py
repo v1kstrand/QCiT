@@ -8,7 +8,7 @@ from timm.loss import SoftTargetCrossEntropy
 from modules.context_vit_v3 import LinearContextViTv3 
 from modules.context_vit_v4_1 import LinearContextViTv4
 from modules.cls_dep_proj_ctx_att import ClsDepProjCtxAttnVit 
-from modules.cls_dep_proj_org_att import ClsDepProjOrgAttnVit
+from modules.qvit import ClsDepProjOrgAttnVit
 from modules.dinov2 import DinoVisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy

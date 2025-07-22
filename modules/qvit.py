@@ -1,30 +1,41 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Imports 
+# # Imports
 
 # In[1]:
 
 
-import jupyter_black
-
-jupyter_black.load()
-
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+from pprint import pprint
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn.init import trunc_normal_
 from torch import Tensor
 import torch.nn.functional as F
+import numpy as np
 
-from copy import deepcopy
 
+#!pip install ipywidgets -q
 
-# # MLP
-
+# # Utils
 # In[2]:
+
+
+class FlashNormLinear(nn.Linear):
+    def __init__(self, in_features, out_features, eps=1e-6, bias=False):
+        super().__init__(in_features, out_features, bias)
+        self.rms_weight = nn.Parameter(torch.ones(in_features))  # γ
+        self.rms_bias = nn.Parameter(torch.zeros(in_features))  # β (optional)
+        self.eps = eps
+
+    def forward(self, x: Tensor) -> Tensor:
+        ms = (x**2).mean(dim=-1, keepdim=True) + self.eps
+        x = x / (ms**0.5)
+        x = x * self.rms_weight + self.rms_bias
+        return F.linear(x, self.weight, self.bias)
 
 
 class Mlp(nn.Module):
@@ -36,19 +47,17 @@ class Mlp(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         drop: float = 0.0,
         bias: bool = True,
-        norm_layer=nn.Identity,
     ) -> None:
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
+        self.dim = in_features
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
         self.drop = nn.Dropout(drop)
-        self.norm_layer = norm_layer(in_features)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.norm_layer(x)
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -57,207 +66,121 @@ class Mlp(nn.Module):
         return x
 
 
-class MultiMlp(nn.Module):
-    def __init__(self, mlp_base, k, n_ctx):
+class FlashMlp(Mlp):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: Optional[int] = None,
+        out_features: Optional[int] = None,
+        act_layer: Callable[..., nn.Module] = nn.GELU,
+        drop: float = 0.0,
+        bias: bool = True,
+    ) -> None:
+        super().__init__(
+            in_features=in_features,
+            hidden_features=hidden_features,
+            out_features=out_features,
+            act_layer=act_layer,
+            drop=drop,
+            bias=bias,
+        )
+        hidden_features = hidden_features or in_features
+        self.fc1 = FlashNormLinear(in_features, hidden_features, bias=bias)
+
+
+class CompressorBlock(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_queries: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        proj_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        n_keep: int = 1,
+    ):
         super().__init__()
-        assert n_ctx % k == 0, "n_ctx must be divisible by k"
-        self.mlps = nn.ModuleList([deepcopy(mlp_base) for _ in range(1 + k)])
-        self.k = k
-        self.n_ctx = n_ctx
+        self.num_heads = num_heads
+        self.head_dim = output_dim // num_heads
+        self.output_dim = output_dim
+        self.n_keep = n_keep
+        self.query_tokens = nn.Parameter(torch.randn(1, num_queries, output_dim))
+
+        self.pre_norm = nn.LayerNorm(input_dim)
+        self.kv_proj = nn.Linear(input_dim, 2 * output_dim, bias=qkv_bias)
+        self.proj = nn.Linear(output_dim, output_dim, bias=proj_bias)
+        self.cls_proj = nn.Linear(input_dim, output_dim, bias=proj_bias)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.attn_drop = attn_drop
 
     def forward(self, x):
-        ctx, patches = x[:, : self.n_ctx], x[:, self.n_ctx :]
+        """
+        x: [B, L, input_dim]
+        Returns: [B, M, output_dim]
+        """
+        B, N, _ = x.shape
+        H, D, M = self.num_heads, self.head_dim, self.query_tokens.size(1)
 
-        seq = []
-        ctx_chunks = torch.chunk(ctx, self.k, 1)  # chunk ctx into K parts
-        for i, ctx_chunk in enumerate(ctx_chunks):
-            seq.append(self.mlps[i](ctx_chunk))
-        seq.append(self.mlps[self.k](patches))
+        q = (
+            self.query_tokens.expand(B, -1, -1).reshape(B, M, H, D).transpose(1, 2)
+        )  # [B, M, D_out]
 
-        return torch.cat(seq, dim=1)
+        cls = x[:, : self.n_keep, :]  # [B, N-n_keep,
+        x = x[:, self.n_keep :, :]  # [B, N-n_keep, input_dim]
+        k, v = (
+            self.kv_proj(self.pre_norm(x))
+            .reshape(B, N - self.n_keep, 2, H, D)
+            .permute(2, 0, 3, 1, 4)
+        )
+
+        attn_out = (
+            F.scaled_dot_product_attention(
+                q, k, v, dropout_p=self.attn_drop if self.training else 0.0
+            )
+            .transpose(1, 2)
+            .reshape(B, M, H * D)
+        )  # [B, M, output_dim]
+
+        x = self.proj_drop(self.proj(attn_out))  # [B, M, output_dim]
+        cls = self.cls_proj(cls)
+        return torch.cat([cls, x], dim=1)  # [B, n_keep + M, output_dim]
 
 
-# # Linear Attention
-
-# In[3]:
-
-
-class LayerScale(nn.Module):
+class Attention(nn.Module):
     def __init__(
         self,
         dim: int,
-        init_values: Union[float, Tensor] = 1e-4,
-        inplace: bool = False,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        proj_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
     ) -> None:
         super().__init__()
-        self.inplace = inplace
-        self.gamma = nn.Parameter(init_values * torch.ones(dim))
-
-    def forward(self, x: Tensor) -> Tensor:
-        return x.mul_(self.gamma) if self.inplace else x * self.gamma
-
-
-# In[4]:
-
-
-class LinearContextAttention(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        n_ctx: int,
-        num_heads: int = 8,
-        qkv_bias: bool = False,
-        attn_drop: float = 0.0,
-        proj_bias: bool = True,
-        proj_drop: float = 0.0,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
-        self.n_ctx = n_ctx
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.sdpa = F.scaled_dot_product_attention
-
-        # — Proj —
-        self.p_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.ctx_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.ctx_to_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.agg_to_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
-
-        # — Dropout —
-        self.attn_drop_v = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-
-        # — Norms —
-        self.norm_p = nn.LayerNorm(dim)
-        self.norm_ctx = nn.LayerNorm(dim)
-        self.norm_agg = nn.LayerNorm(dim)
-
-        # - Coef -
-        self.alpha = LayerScale(dim)
-        self.beta = LayerScale(dim)
-
-        # — Out proj —
-        self.to_out_ctx = nn.Linear(dim, dim, bias=proj_bias)
-        self.to_out_agg = nn.Linear(dim, dim, bias=proj_bias)
-        self.to_out_p = nn.Linear(dim, dim, bias=proj_bias)
-
-    def proj_qkv(self, x: Tensor, W: nn.Linear, seq_len: int, n: int) -> Tensor:
-        y = W(x).view(x.size(0), seq_len, n, self.num_heads, self.head_dim)
-        y = y.permute(2, 0, 3, 1, 4)  # [n, B, H, seq_len, d]
-        return y[0] if n == 1 else (y[0], y[1]) if n == 2 else (y[0], y[1], y[2])
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = attn_drop
+        self.proj = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x: Tensor) -> Tensor:
-        B, S, D = x.shape  # x: [B, M+N, D]. S = [Ctx, Cls, Reg, Patches]
-        M = self.n_ctx  # Ctx, Agg
-        N = S - M  # Cls + Reg + Patches
+        B, N, _ = x.shape
+        H, D = self.num_heads, self.head_dim
 
-        # 1) split out tokens
-        ctx, patches = x[:, : self.n_ctx], x[:, self.n_ctx :]
+        q, k, v = self.qkv(x).reshape(B, N, 3, H, D).permute(2, 0, 3, 1, 4)
 
-        # 2) CTX Self-attention (M * M)
-        norm_ctx = self.norm_ctx(ctx)
-        Q_ctx, K_ctx, V_ctx = self.proj_qkv(norm_ctx, self.ctx_to_qkv, M, 3)  # 3D*2
-        att_ctx = self.sdpa(Q_ctx, K_ctx, V_ctx, dropout_p=self.attn_drop_v)
-        att_ctx = att_ctx.transpose(1, 2).reshape(B, M, D)
+        attn_out = (
+            F.scaled_dot_product_attention(
+                q, k, v, dropout_p=self.attn_drop if self.training else 0.0
+            )
+            .transpose(1, 2)
+            .reshape(B, N, H * D)
+        )  # [B, M, output_dim]
 
-        # 3) Patch ← CTX attention (N × M)
-        q_ctx = self.proj_qkv(norm_ctx, self.ctx_to_q, M, 1)
-        Q_p, K_p, V_p = self.proj_qkv(self.norm_p(patches), self.p_to_qkv, N, 3)
-        att_agg = self.sdpa(q_ctx, K_p, V_p, dropout_p=self.attn_drop_v)
-        att_agg = att_agg.transpose(1, 2).reshape(B, M, D)
-
-        # 4) Prep ctx
-        out_agg = self.out_drop(self.to_out_agg(att_agg))
-        out_ctx = self.out_drop(self.to_out_ctx(att_ctx))
-        ctx = self.alpha(out_agg) + self.beta(out_ctx)
-
-        # 5) Patches ← agg Attention (N × M)
-        K_agg, V_agg = self.proj_qkv(self.norm_agg(att_agg), self.agg_to_kv, M, 2)
-        att_p = self.sdpa(Q_p, K_agg, V_agg, dropout_p=self.attn_drop_v)
-        att_p = att_p.transpose(1, 2).reshape(B, N, D)
-        patches = self.out_drop(self.to_out_p(att_p))
-
-        # 6) re-pack and return
-        return torch.cat([ctx, patches], dim=1)
-
-
-# In[5]:
-
-
-class LinearContextAttention_(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        n_ctx: int,
-        num_heads: int = 8,
-        qkv_bias: bool = False,
-        attn_drop: float = 0.0,
-        proj_bias: bool = True,
-        proj_drop: float = 0.0,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
-        self.n_ctx = n_ctx
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.sdpa = F.scaled_dot_product_attention
-
-        # — Proj —
-        self.p_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.ctx_to_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.agg_to_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
-
-        # — Dropout —
-        self.attn_drop_v = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-
-        # — Norms —
-        self.norm_p = nn.LayerNorm(dim)
-        self.norm_ctx = nn.LayerNorm(dim)
-        self.norm_agg = nn.LayerNorm(dim)
-
-        # — Out proj —
-        self.to_out_ctx = nn.Linear(dim, dim, bias=proj_bias)
-        self.to_out_p = nn.Linear(dim, dim, bias=proj_bias)
-
-    def proj_qkv(self, x: Tensor, W: nn.Linear, seq_len: int, n: int) -> Tensor:
-        y = W(x).view(x.size(0), seq_len, n, self.num_heads, self.head_dim)
-        y = y.permute(2, 0, 3, 1, 4)  # [n, B, H, seq_len, d]
-        return y[0] if n == 1 else (y[0], y[1]) if n == 2 else (y[0], y[1], y[2])
-
-    def forward(self, x: Tensor) -> Tensor:
-        B, S, D = x.shape  # x: [B, M+N, D]. S = [Ctx, Cls, Reg, Patches]
-        M = self.n_ctx  # Ctx, Agg
-        N = S - M  # Cls + Reg + Patches
-
-        # 1) split out tokens
-        ctx, patches = x[:, : self.n_ctx], x[:, self.n_ctx :]
-
-        # 2) patch QKV proj
-        Q_p, K_p, V_p = self.proj_qkv(self.norm_p(patches), self.p_to_qkv, N, 3)
-
-        # 3) Ctx ← Patches  (M × N)
-        Q_ctx = self.proj_qkv(self.norm_ctx(ctx), self.ctx_to_q, M, 1)
-        att_agg = self.sdpa(Q_ctx, K_p, V_p, dropout_p=self.attn_drop_v)
-        att_agg = att_agg.transpose(1, 2).reshape(B, M, D)
-        ctx = self.out_drop(self.to_out_ctx(att_agg))
-
-        # 4) Patches ← agg  (N × M)
-        K_agg, V_agg = self.proj_qkv(self.norm_agg(att_agg), self.agg_to_kv, M, 2)
-        att_p = self.sdpa(Q_p, K_agg, V_agg, dropout_p=self.attn_drop_v)
-        att_p = att_p.transpose(1, 2).reshape(B, N, D)
-        patches = self.out_drop(self.to_out_p(att_p))
-
-        # 5) re-pack and return
-        return torch.cat([ctx, patches], dim=1)
-
-
-# # Block
-
-# In[6]:
+        return self.proj_drop(self.proj(attn_out))  # [B, M, output_dim]
 
 
 # # Block
@@ -284,66 +207,76 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
 
+class LayerScale(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        init_values: Union[float, Tensor] = 1e-5,
+        inplace: bool = False,
+    ) -> None:
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
+
 class Block(nn.Module):
     def __init__(
         self,
         dim: int,
         num_heads: int,
-        n_ctx: int,
-        k_ctx: int = 0,
         mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
+        qkv_bias: bool = False,
         proj_bias: bool = True,
         ffn_bias: bool = True,
         drop: float = 0.0,
         attn_drop: float = 0.0,
-        layerscale=True,
+        layerscale: Optional[float] = None,
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
-        ffn_layer: Callable[..., nn.Module] = Mlp,
-        attn_act=nn.Identity,
+        flash_mlp: bool = False,
     ) -> None:
         super().__init__()
-        # self.norm1 = norm_layer(dim) # Included in attn
-        # self.norm2 = norm_layer(dim) # Included in mlp
-
-        self.attn = LinearContextAttention(
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention(
             dim,
             num_heads=num_heads,
-            n_ctx=n_ctx,
             qkv_bias=qkv_bias,
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        self.ls1 = LayerScale(dim) if layerscale else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
+        )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-        mlp = ffn_layer(
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+
+        ffn_layer = FlashMlp if flash_mlp else Mlp
+        self.mlp = ffn_layer(
             in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            hidden_features=mlp_hidden_dim,
             act_layer=act_layer,
             drop=drop,
             bias=ffn_bias,
-            norm_layer=norm_layer,
         )
-
-        if k_ctx == 0:
-            self.mlp = mlp
-        else:
-            self.mlp = MultiMlp(mlp, k_ctx, n_ctx)
-
-        self.ls2 = LayerScale(dim) if layerscale else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
+        )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.sample_drop_ratio = drop_path
 
     def forward(self, x: Tensor) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(x))
+            return self.ls1(self.attn(self.norm1(x)))
 
         def ffn_residual_func(x: Tensor) -> Tensor:
-            return self.ls2(self.mlp(x))
+            return self.ls2(self.mlp(self.norm2(x)))
 
         if self.training and self.sample_drop_ratio > 0.1:
             # the overhead is compensated only for a drop path rate larger than 0.1
@@ -469,24 +402,6 @@ class PatchEmbed(nn.Module):
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
 
-    def flops(self) -> float:
-        Ho, Wo = self.patches_resolution
-        flops = (
-            Ho
-            * Wo
-            * self.embed_dim
-            * self.in_chans
-            * (self.patch_size[0] * self.patch_size[1])
-        )
-        if self.norm is not None:
-            flops += Ho * Wo * self.embed_dim
-        return flops
-
-
-# # Vit
-
-# In[8]:
-
 
 def named_apply(
     fn: Callable, module: nn.Module, name="", depth_first=True, include_root=False
@@ -518,29 +433,31 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class LinearContextViTv4(nn.Module):
+class QCit(nn.Module):
     def __init__(
         self,
+        head_add,
+        num_stages=4,
+        blocks_per_stage=3,
+        end_val=0.05,
         img_size=224,
         patch_size=16,
         in_chans=3,
-        embed_dim=768,
-        depth=12,
-        num_heads=12,
+        embed_dim=384,
+        num_heads=6,
         mlp_ratio=4.0,
         qkv_bias=False,
         ffn_bias=True,
         proj_bias=True,
         drop_path_rate=0.0,
         drop_path_uniform=True,
-        layerscale=False,
+        layerscale=None,
         embed_layer=PatchEmbed,
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        n_ctx=32,
-        k_ctx=0,
-        attn_act=nn.Identity,
+        flash_mlp=False,
+        return_cls_only=True,
     ):
         """
         Args:
@@ -561,14 +478,14 @@ class LinearContextViTv4(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        assert n_ctx >= 1, "n_ctx needs to be 1 or more"
         self.num_features = self.embed_dim = embed_dim
-        self.n_blocks = depth
+        self.n_blocks = depth = num_stages * blocks_per_stage
+        self.num_stages = num_stages
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
-        self.n_ctx = n_ctx
+        self.return_cls_only = return_cls_only
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -579,63 +496,125 @@ class LinearContextViTv4(nn.Module):
         self.n_patches = self.patch_embed.n_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.ctx_tokens = nn.Parameter(torch.zeros(1, self.n_ctx, embed_dim))
-        num_pos_emb = self.n_ctx + 1 + self.n_registers + self.n_patches
+        num_pos_emb = 1 + self.n_registers + self.n_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
-
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
+        assert (
+            drop_path_uniform is True
+        ), "drop_path_uniform must be True for QCit (TODO)"
         if drop_path_uniform is True:
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
 
-        blocks_list = [
-            Block(
-                dim=embed_dim,
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                ffn_bias=ffn_bias,
-                drop_path=dpr[i],
-                norm_layer=norm_layer,
-                act_layer=act_layer,
-                ffn_layer=Mlp,
-                layerscale=layerscale,
-                n_ctx=n_ctx,
-                k_ctx=k_ctx,
-                attn_act=attn_act,
-            )
-            for i in range(depth)
-        ]
+        def get_compressor_config(
+            end_val,
+            initial_tokens,
+            initial_heads,
+            num_stages,
+            head_dim=64,
+            head_add=1,
+            initial_dim=None,
+        ):
+            retentions = np.linspace(1.0, end_val, num_stages + 1)
+            tokens = [initial_tokens]
+            for i in range(1, num_stages + 1):
+                next_tokens = int(round(tokens[-1] * retentions[i]))
+                tokens.append(next_tokens)
 
+            # Build list of num_heads and dims
+            num_heads = [initial_heads + (i + 1) * head_add for i in range(num_stages)]
+            output_dims = [h * head_dim for h in num_heads]
+            if initial_dim is None:
+                initial_dim = initial_heads * head_dim
+            input_dims = [initial_dim] + output_dims[:-1]  # Offset by 1
+
+            print(f"Input_dim: {initial_dim}, num_heads: {num_heads}, tokens: {tokens}")
+
+            # Now zip together for compressor configs
+            schedule = []
+            for i in range(num_stages):
+                schedule.append(
+                    {
+                        "input_dim": input_dims[i],
+                        "output_dim": output_dims[i],
+                        "num_heads": num_heads[i],
+                        "num_queries": tokens[i + 1],  # tokens after compression
+                    }
+                )
+            pprint(schedule)
+            return schedule
+
+        compressor_config = get_compressor_config(
+            end_val=end_val,
+            initial_tokens=self.n_patches,
+            initial_heads=num_heads,
+            num_stages=num_stages,
+            head_dim=embed_dim // num_heads,
+            head_add=head_add,
+        )
+
+        BlockPartial = partial(
+            Block,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            ffn_bias=ffn_bias,
+            norm_layer=norm_layer,
+            act_layer=act_layer,
+            layerscale=layerscale,
+            flash_mlp=flash_mlp,
+            drop_path=dpr[0],
+        )
+
+        blocks_list = []
+        for i, cfg in enumerate(compressor_config):
+            for _ in range(blocks_per_stage):
+                blocks_list.append(
+                    BlockPartial(
+                        dim=cfg["input_dim"], num_heads=cfg["num_heads"] - head_add
+                    )
+                )
+            if i == len(compressor_config) - 1:
+                break
+
+            blocks_list.append(
+                CompressorBlock(
+                    input_dim=cfg["input_dim"],
+                    output_dim=cfg["output_dim"],
+                    num_queries=cfg["num_queries"],
+                    num_heads=cfg["num_heads"],
+                    n_keep=self.n_registers + 1,
+                )
+            )
         self.blocks = nn.ModuleList(blocks_list)
-        self.norm = norm_layer(embed_dim)
+        self.norm = norm_layer(compressor_config[-1]["input_dim"])
         self.init_weights()
 
     def init_weights(self):
         trunc_normal_(self.pos_embed, std=0.02)
         nn.init.normal_(self.cls_token, std=1e-6)
-        nn.init.normal_(self.ctx_tokens, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
-        x = self.patch_embed(x)
-        cls_token = self.cls_token.expand(x.shape[0], -1, -1)
-        ctx_tokens = self.ctx_tokens.expand(x.shape[0], -1, -1)
-        x = torch.cat((ctx_tokens, cls_token, x), dim=1)
-        return self.token_drop(x + self.pos_embed)
+        with torch.profiler.record_function("Patch Embed"):
+            x = self.patch_embed(x)
+        with torch.profiler.record_function("prepare Tokens"):
+            cls_token = self.cls_token.expand(x.shape[0], -1, -1)
+            x = torch.cat((cls_token, x), dim=1) + self.pos_embed
+        with torch.profiler.record_function("Token Drop"):
+            x = self.token_drop(x)
+        return x
 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
-        patch_idx = 1 + self.n_registers + self.n_ctx
+        patch_idx = 1 + self.n_registers
         non_patches, patches = x[:, :patch_idx, :], x[:, patch_idx:, :]
         num_keep = int((1 - self.p_token_drop) * self.n_patches)
         r = torch.rand(x.size(0), self.n_patches, device=x.device)
         batch_perms = torch.argsort(r, dim=1)[:, :num_keep]  # [B, num_keep]
-
         batch_idx = torch.arange(x.size(0), device=x.device).unsqueeze(1)  # [B, 1]
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
@@ -644,16 +623,9 @@ class LinearContextViTv4(nn.Module):
         x = self.prepare_tokens(x)
         for blk in self.blocks:
             x = blk(x)
-        return self.norm(x)[:, self.n_ctx :]
+        with torch.profiler.record_function("Final Norm"):
+            out = self.norm(x)
+        return out[:, 0, :] if self.return_cls_only else out
 
 
 # # END
-
-# In[ ]:
-
-
-"""vit = LinearContextViT()
-inp = torch.rand(10, 3, 224, 224)
-with torch.no_grad():
-    vit(inp)"""
-
