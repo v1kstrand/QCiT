@@ -1,0 +1,12 @@
+comet_ml
+datasets
+jupyter_black
+matplotlib
+numpy
+pillow
+psutil
+timm
+torch
+torchvision
+tqdm
+pyyaml
