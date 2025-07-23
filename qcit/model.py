@@ -62,7 +62,7 @@ class OuterModel(nn.Module):
                 torch.cuda.synchronize()
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
-                
+            
             self.backward(self.inner, ce)
             
             if time_it:

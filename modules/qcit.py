@@ -128,6 +128,7 @@ class CompressorBlock(nn.Module):
         self.cls_proj = nn.Linear(input_dim, output_dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_drop = attn_drop
+        trunc_normal_(self.query_bank, std=0.02)
 
     def forward(self, x: Tensor) -> Tensor:
         if SDP_KERNEL_THRESHOLD == -1:
