@@ -263,7 +263,6 @@ class Block(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
-        k_queries: int = 1,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -274,7 +273,6 @@ class Block(nn.Module):
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
-            k_queries=k_queries,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -463,7 +461,7 @@ def init_weights_vit_timm(module: nn.Module):
 class QCiT(nn.Module):
     def __init__(
         self,
-        head_add,
+        head_add=0,
         num_stages=4,
         blocks_per_stage=3,
         end_val=0.05,
@@ -593,7 +591,6 @@ class QCiT(nn.Module):
             layerscale=layerscale,
             flash_mlp=flash_mlp,
             drop_path=dpr[0],
-            k_queries=k_queries,
         )
 
         blocks_list = []
@@ -615,6 +612,7 @@ class QCiT(nn.Module):
                     num_queries=cfg["num_queries"],
                     num_heads=cfg["num_heads"],
                     n_keep=self.n_registers + 1,
+                    k_queries=k_queries,
                 )
             )
             

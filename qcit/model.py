@@ -5,7 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
-from modules.qcit_v1 import QCiT
+from modules.qcit import QCiT
 from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
