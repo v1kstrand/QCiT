@@ -23,7 +23,7 @@ def reset(n=1):
 def get_data_debug(get_args, load_data):
     args = get_args(check_args=False)
     args.print_samples = 0
-    args.batch_size = 800
+    args.batch_size = 1024
     args.prefetch_factor = 2
     args.num_workers = os.cpu_count() - 1
     args.kw["label_smoothing"] = 0.01

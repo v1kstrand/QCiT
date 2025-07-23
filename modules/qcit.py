@@ -617,8 +617,9 @@ class QCiT(nn.Module):
             )
             
             if mlp_after_compressor:
+                mlp = blocks_list[-1]
                 blocks_list.append(norm_layer(cfg["output_dim"]))
-                blocks_list.append(deepcopy(blocks_list[-1].mlp))
+                blocks_list.append(deepcopy(mlp))
             
         self.blocks = nn.ModuleList(blocks_list)
         if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
