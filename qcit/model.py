@@ -46,16 +46,28 @@ class OuterModel(nn.Module):
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
 
-    def forward(self, imgs, labels, cum_stats, mixup=False):
-        stats, start_time = {}, time.perf_counter()
-
+    def forward(self, imgs, labels, cum_stats, mixup=False, time_it=False):
+        stats = {}
+        
         if self.training:
             self.backward.zero()
+            
+            if time_it:
+                start_time = time.perf_counter()
+                torch.cuda.synchronize()
+                
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
-            stats[f"Time/Forward Pass - {self.name}"] = to_min(start_time)
-            back_time = time.perf_counter()
+            
+            if time_it:
+                torch.cuda.synchronize()
+                stats[f"Time/Forward Pass - {self.name}"] = to_min(start_time)
+                back_time = time.perf_counter()
+                
             self.backward(self.inner, ce)
-            stats[f"Time/Backward Pass - {self.name}"] = to_min(back_time)
+            
+            if time_it:
+                torch.cuda.synchronize()
+                stats[f"Time/Backward Pass - {self.name}"] = to_min(back_time)
         else:
             ce, acc1, acc5 = self.inner(imgs, labels)
 

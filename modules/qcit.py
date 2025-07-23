@@ -3,8 +3,6 @@
 
 # # Imports
 
-# In[1]:
-
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
@@ -537,7 +535,6 @@ class QCiT(nn.Module):
             num_stages,
             head_dim=64,
             head_add=1,
-            initial_dim=None,
         ):
             retentions = np.linspace(1.0, end_val, num_stages + 1)
             tokens = [initial_tokens]
@@ -545,16 +542,11 @@ class QCiT(nn.Module):
                 next_tokens = int(round(tokens[-1] * retentions[i]))
                 tokens.append(next_tokens)
 
-            # Build list of num_heads and dims
             num_heads = [initial_heads + (i + 1) * head_add for i in range(num_stages)]
             output_dims = [h * head_dim for h in num_heads]
-            if initial_dim is None:
-                initial_dim = initial_heads * head_dim
+            initial_dim = initial_heads * head_dim
             input_dims = [initial_dim] + output_dims[:-1]
-
             print(f"Input_dim: {initial_dim}, num_heads: {num_heads}, tokens: {tokens}")
-
-            # Now zip together for compressor configs
             schedule = []
             for i in range(num_stages):
                 schedule.append(
@@ -562,7 +554,7 @@ class QCiT(nn.Module):
                         "input_dim": input_dims[i],
                         "output_dim": output_dims[i],
                         "num_heads": num_heads[i],
-                        "num_queries": tokens[i + 1],  # tokens after compression
+                        "num_queries": tokens[i + 1],  
                     }
                 )
             pprint(schedule)
@@ -612,7 +604,6 @@ class QCiT(nn.Module):
             )
         self.blocks = nn.ModuleList(blocks_list)
         if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
-            print(f"DEBUG QCiT: Setting out_dim to {embed_dim}")
             self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
             self.norm = norm_layer(embed_dim)
         else:
@@ -653,7 +644,7 @@ class QCiT(nn.Module):
             x = blk(x)
         
         with torch.profiler.record_function("Final Proj and Norm"):
-            out = self.norm(self.out_proj(x))
+            out = self.norm(self.out_proj(x)) # TODO swap order of proj and norm
         return out[:, 0, :] if self.return_cls_only else out
 
 

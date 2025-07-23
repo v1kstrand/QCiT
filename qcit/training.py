@@ -60,7 +60,7 @@ def train_loop(modules, exp):
                     mixup = True
                     imgs, labels = mixup_fn(imgs, labels)
                 for name, model in models.items():
-                    model.forward(imgs, labels, stats[name], mixup)
+                    model.forward(imgs, labels, stats[name], mixup, time_it=step % args.freq["stats"] == 0)
 
             if step and step % args.freq["stats"] == 0:
                 for name, s in stats.items():
