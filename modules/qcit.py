@@ -83,6 +83,20 @@ class FlashMlp(Mlp):
         )
         hidden_features = hidden_features or in_features
         self.fc1 = FlashNormLinear(in_features, hidden_features, bias=bias)
+        
+class CompressorPath(nn.Module):
+    def __init__(self, compressor, mlp_out=False, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.compressor = compressor
+        out_dim = compressor.output_dim
+        self.norm_layer = norm_layer(out_dim) if mlp_out else nn.Identity()
+        self.mlp = Mlp(out_dim) if mlp_out else nn.Identity()
+        self.res_con = mlp_out
+    def forward(self, x):
+        x_comp = self.compressor(x)
+        x_mlp = self.norm_layer(x_comp)
+        x_mlp = self.mlp(x_comp)
+        return x_comp + x_mlp if self.res_con else x_mlp
 
 
 class CompressorBlock(nn.Module):
@@ -491,7 +505,7 @@ class QCiT(nn.Module):
         n_registers=0,
         flash_mlp=False,
         return_cls_only=True,
-        out_dim=None,
+        keep_out_dim=False,
         mlp_after_compressor=False,
         k_queries=1,
     ):
@@ -601,20 +615,21 @@ class QCiT(nn.Module):
             flash_mlp=flash_mlp,
             drop_path=dpr[0],
         )
-
+        
         blocks_list = []
         for i, cfg in enumerate(compressor_config):
             for _ in range(blocks_per_stage):
                 blocks_list.append(
                     BlockPartial(
-                        dim=cfg["input_dim"], num_heads=cfg["num_heads"] - head_add
+                        dim=cfg["input_dim"
+                                ], num_heads=cfg["num_heads"] - head_add
                     )
                 )
 
             if i == len(compressor_config) - 1:
                 break
 
-            blocks_list.append(
+            blocks_list.append(CompressorPath(
                 CompressorBlock(
                     input_dim=cfg["input_dim"],
                     output_dim=cfg["output_dim"],
@@ -622,20 +637,15 @@ class QCiT(nn.Module):
                     num_heads=cfg["num_heads"],
                     n_keep=self.n_registers + 1,
                     k_queries=k_queries,
-                )
-            )
-
-            if mlp_after_compressor:
-                blocks_list.append(norm_layer(cfg["output_dim"]))
-                blocks_list.append(deepcopy(Mlp(in_features=cfg["output_dim"])))
+                ),
+                mlp_out=mlp_after_compressor,
+                norm_layer=norm_layer,
+                ))
 
         self.blocks = nn.ModuleList(blocks_list)
-        self.norm = norm_layer(compressor_config[-1]["input_dim"])
-        if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
-            self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
-        else:
-            self.out_proj = nn.Identity()
-            
+        out_dim = compressor_config[-1]["input_dim"]
+        self.norm = norm_layer(out_dim)
+        self.out_proj = nn.Identity() if keep_out_dim else nn.Linear(out_dim, embed_dim)       
         self.init_weights()
 
     def init_weights(self):
