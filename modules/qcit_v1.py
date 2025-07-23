@@ -7,7 +7,6 @@
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
 from pprint import pprint
-from copy import deepcopy
 
 import torch
 from torch import nn
@@ -97,17 +96,13 @@ class CompressorBlock(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         n_keep: int = 1,
-        k_queries: int = 1,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = output_dim // num_heads
         self.output_dim = output_dim
         self.n_keep = n_keep
-        self.query_bank = nn.Parameter(torch.randn(k_queries, num_queries, output_dim))
-        self.k_queries = k_queries
-        if k_queries > 1:
-            self.cls_to_weights = nn.Linear(input_dim, k_queries)
+        self.query_tokens = nn.Parameter(torch.randn(1, num_queries, output_dim))
 
         self.pre_norm = nn.LayerNorm(input_dim)
         self.kv_proj = nn.Linear(input_dim, 2 * output_dim, bias=qkv_bias)
@@ -131,20 +126,14 @@ class CompressorBlock(nn.Module):
         Returns: [B, M, output_dim]
         """
         B, N, _ = x.shape
-        H, D, M = self.num_heads, self.head_dim, self.query_bank.size(1)
-        
+        H, D, M = self.num_heads, self.head_dim, self.query_tokens.size(1)
+
+        q = (
+            self.query_tokens.expand(B, -1, -1).reshape(B, M, H, D).transpose(1, 2)
+        )  # [B, M, D_out]
+
         cls = x[:, : self.n_keep, :]  # [B, N-n_keep,
         x = x[:, self.n_keep :, :]  # [B, N-n_keep, input_dim]
-        
-        if self.k_queries > 1:
-            weights = torch.softmax(self.cls_to_weights(cls[:, 0, :]), dim=-1)  # [B, K]
-            compressors = (weights.unsqueeze(-1).unsqueeze(-1) * self.query_bank).sum(dim=1)  # [B, M, D]
-        else:
-            compressors = self.query_bank[0].unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
-
-        q = compressors.reshape(B, M, H, D).transpose(1, 2)  # [B, H, M, D]
-
-        
         k, v = (
             self.kv_proj(self.pre_norm(x))
             .reshape(B, N - self.n_keep, 2, H, D)
@@ -173,6 +162,7 @@ class Attention(nn.Module):
         proj_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        sdp_kernel_threshold = 100,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
@@ -181,6 +171,7 @@ class Attention(nn.Module):
         self.attn_drop = attn_drop
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.sdp_kernel_threshold = sdp_kernel_threshold
         
     def forward(self, x: Tensor) -> Tensor:
         if x.size(1) > SDP_KERNEL_THRESHOLD:
@@ -263,7 +254,6 @@ class Block(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
-        k_queries: int = 1,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -274,7 +264,6 @@ class Block(nn.Module):
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
-            k_queries=k_queries,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -487,8 +476,6 @@ class QCiT(nn.Module):
         flash_mlp=False,
         return_cls_only=True,
         out_dim=None,
-        mlp_after_compressor=False,
-        k_queries=1,
     ):
         """
         Args:
@@ -593,7 +580,6 @@ class QCiT(nn.Module):
             layerscale=layerscale,
             flash_mlp=flash_mlp,
             drop_path=dpr[0],
-            k_queries=k_queries,
         )
 
         blocks_list = []
@@ -604,7 +590,6 @@ class QCiT(nn.Module):
                         dim=cfg["input_dim"], num_heads=cfg["num_heads"] - head_add
                     )
                 )
-            
             if i == len(compressor_config) - 1:
                 break
 
@@ -617,11 +602,6 @@ class QCiT(nn.Module):
                     n_keep=self.n_registers + 1,
                 )
             )
-            
-            if mlp_after_compressor:
-                blocks_list.append(norm_layer(cfg["output_dim"]))
-                blocks_list.append(deepcopy(blocks_list[-1].mlp))
-            
         self.blocks = nn.ModuleList(blocks_list)
         if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
             self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
@@ -664,7 +644,7 @@ class QCiT(nn.Module):
             x = blk(x)
         
         with torch.profiler.record_function("Final Proj and Norm"):
-            out = self.out_proj(self.norm(x)) 
+            out = self.norm(self.out_proj(x)) # TODO swap order of proj and norm
         return out[:, 0, :] if self.return_cls_only else out
 
 

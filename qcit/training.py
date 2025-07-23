@@ -68,7 +68,7 @@ def train_loop(modules, exp):
                         exp.log_metric(k, sum(v) / len(v), step=step)
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
-                if stats_time is not None:                
+                if stats_time is not None:       
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
                 opt_sched()
                 save_model(modules, "model")

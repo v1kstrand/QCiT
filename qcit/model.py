@@ -5,7 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
-from modules.qcit import QCiT
+from modules.qcit_v1 import QCiT
 from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -68,6 +68,7 @@ class OuterModel(nn.Module):
             if time_it:
                 torch.cuda.synchronize()
                 stats[f"Time/Backward Pass - {self.name}"] = to_min(back_time)
+                stats[f"Time/Full Pass - {self.name}"] = to_min(start_time)
         else:
             ce, acc1, acc5 = self.inner(imgs, labels)
 
