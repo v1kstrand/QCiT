@@ -47,7 +47,7 @@ class Mlp(nn.Module):
     ) -> None:
         super().__init__()
         out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
+        hidden_features = hidden_features or in_features * 4
         self.dim = in_features
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
@@ -117,11 +117,14 @@ class CompressorBlock(nn.Module):
         self.attn_drop = attn_drop
 
     def forward(self, x: Tensor) -> Tensor:
-        if x.size(1) > SDP_KERNEL_THRESHOLD:
+        if SDP_KERNEL_THRESHOLD == -1:
+            print("Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method")
+            return self._forward(x)
+        elif x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
-            
+
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
             return self._forward(x)
 
@@ -132,19 +135,20 @@ class CompressorBlock(nn.Module):
         """
         B, N, _ = x.shape
         H, D, M = self.num_heads, self.head_dim, self.query_bank.size(1)
-        
+
         cls = x[:, : self.n_keep, :]  # [B, N-n_keep,
         x = x[:, self.n_keep :, :]  # [B, N-n_keep, input_dim]
-        
+
         if self.k_queries > 1:
             weights = torch.softmax(self.cls_to_weights(cls[:, 0, :]), dim=-1)  # [B, K]
-            compressors = (weights.unsqueeze(-1).unsqueeze(-1) * self.query_bank).sum(dim=1)  # [B, M, D]
+            compressors = (weights.unsqueeze(-1).unsqueeze(-1) * self.query_bank).sum(
+                dim=1
+            )  # [B, M, D]
         else:
             compressors = self.query_bank[0].unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
 
         q = compressors.reshape(B, M, H, D).transpose(1, 2)  # [B, H, M, D]
 
-        
         k, v = (
             self.kv_proj(self.pre_norm(x))
             .reshape(B, N - self.n_keep, 2, H, D)
@@ -181,13 +185,16 @@ class Attention(nn.Module):
         self.attn_drop = attn_drop
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
-        
+
     def forward(self, x: Tensor) -> Tensor:
-        if x.size(1) > SDP_KERNEL_THRESHOLD:
+        if SDP_KERNEL_THRESHOLD == -1:
+            print("Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method")
+            return self._forward(x)
+        elif x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
-            
+
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
             return self._forward(x)
 
@@ -516,7 +523,9 @@ class QCiT(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         if depth is not None:
-            print(f"INFO QCiT: Depth ({depth}) is ignored, using num_stages={num_stages} * blocks_per_stage={blocks_per_stage}")
+            print(
+                f"INFO QCiT: Depth ({depth}) is ignored, using num_stages={num_stages} * blocks_per_stage={blocks_per_stage}"
+            )
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -565,7 +574,7 @@ class QCiT(nn.Module):
                         "input_dim": input_dims[i],
                         "output_dim": output_dims[i],
                         "num_heads": num_heads[i],
-                        "num_queries": tokens[i + 1],  
+                        "num_queries": tokens[i + 1],
                     }
                 )
             pprint(schedule)
@@ -601,7 +610,7 @@ class QCiT(nn.Module):
                         dim=cfg["input_dim"], num_heads=cfg["num_heads"] - head_add
                     )
                 )
-            
+
             if i == len(compressor_config) - 1:
                 break
 
@@ -615,19 +624,18 @@ class QCiT(nn.Module):
                     k_queries=k_queries,
                 )
             )
-            
+
             if mlp_after_compressor:
-                mlp = blocks_list[-1]
                 blocks_list.append(norm_layer(cfg["output_dim"]))
-                blocks_list.append(deepcopy(mlp))
-            
+                blocks_list.append(deepcopy(Mlp(in_features=cfg["output_dim"])))
+
         self.blocks = nn.ModuleList(blocks_list)
+        self.norm = norm_layer(compressor_config[-1]["input_dim"])
         if out_dim is None or out_dim != compressor_config[-1]["output_dim"]:
             self.out_proj = nn.Linear(compressor_config[-1]["input_dim"], embed_dim)
-            self.norm = norm_layer(embed_dim)
         else:
             self.out_proj = nn.Identity()
-            self.norm = norm_layer(compressor_config[-1]["input_dim"])
+            
         self.init_weights()
 
     def init_weights(self):
@@ -661,9 +669,9 @@ class QCiT(nn.Module):
         x = self.prepare_tokens(x)
         for blk in self.blocks:
             x = blk(x)
-        
+
         with torch.profiler.record_function("Final Proj and Norm"):
-            out = self.out_proj(self.norm(x)) 
+            out = self.out_proj(self.norm(x))
         return out[:, 0, :] if self.return_cls_only else out
 
 
