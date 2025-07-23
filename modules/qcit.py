@@ -7,7 +7,6 @@
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
 from pprint import pprint
-from copy import deepcopy
 
 import torch
 from torch import nn
