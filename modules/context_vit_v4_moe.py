@@ -520,7 +520,7 @@ class ContextViTv4MoE(nn.Module):
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
         self.tok_query = nn.Parameter(torch.zeros(bank_depth, bank_size, embed_dim))
         num_pos_emb = 1 + self.n_registers + self.n_patches
-        self.tok_pos_embed = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
+        self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
@@ -553,7 +553,7 @@ class ContextViTv4MoE(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        trunc_normal_(self.tok_pos_embed, std=0.02)
+        trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_cls, std=1e-6)
         nn.init.normal_(self.tok_query, std=1e-6)
         named_apply(init_weights_vit_timm, self)
@@ -563,7 +563,7 @@ class ContextViTv4MoE(nn.Module):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
             cls_token = self.tok_cls.expand(x.shape[0], -1, -1)
-            x = torch.cat((cls_token, x), dim=1) + self.tok_pos_embed
+            x = torch.cat((cls_token, x), dim=1) + self.tok_pos_emb
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
