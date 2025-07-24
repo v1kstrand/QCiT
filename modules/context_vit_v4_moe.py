@@ -121,7 +121,7 @@ class ContextAttentionMoE(nn.Module):
     def __init__(
         self,
         dim: int,
-        query_bank_size: int,
+        query_bank_depth: int,
         proj_query_bank: bool = False,
         num_heads: int = 8,
         qkv_bias: bool = False,
@@ -136,8 +136,8 @@ class ContextAttentionMoE(nn.Module):
         self.h_d = dim // num_heads
         self.sdpa = F.scaled_dot_product_attention
         self.query_bank = None
-        if query_bank_size > 1:
-            self.cls_to_weights = nn.Linear(dim, query_bank_size)
+        if query_bank_depth > 1:
+            self.cls_to_weights = nn.Linear(dim, query_bank_depth)
         self.query_ln = nn.LayerNorm(dim) if proj_query_bank else nn.Identity()
         self.query_proj = nn.Linear(dim, dim, bias=qkv_bias) if proj_query_bank else nn.Identity()
 
@@ -241,7 +241,7 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
-        query_bank_size: int,
+        query_bank_depth: int,
         proj_query_bank: bool = False,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
@@ -259,7 +259,7 @@ class Block(nn.Module):
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
         self.attn = ContextAttentionMoE(
             dim,
-            query_bank_size=query_bank_size,
+            query_bank_depth=query_bank_depth,
             proj_query_bank=proj_query_bank,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -541,7 +541,7 @@ class ContextViTv4MoE(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                query_bank_size=bank_size,
+                query_bank_depth=bank_depth,
                 proj_query_bank=proj_query_bank,
                 flash_mlp=flash_mlp,
             )
