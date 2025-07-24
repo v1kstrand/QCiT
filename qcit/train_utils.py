@@ -80,16 +80,10 @@ def init_model(model, args):
         params[group]["params"].append(p)
 
     # Tokens
-    if hasattr(model.inner.model, "cls_token"):
-        params["no_reg_0"]["params"].append(model.inner.model.cls_token)
-    if hasattr(model.inner.model, "pos_embed"):
-        params["no_reg_0"]["params"].append(model.inner.model.pos_embed)
-    if hasattr(model.inner.model, "ctx_tokens"):
-        params["no_reg_0"]["params"].append(model.inner.model.ctx_tokens)
-    if model.kw["arc"] == "citv5":
-        m = model.inner.model
-        for t in ["cls_pos_embed", "p_pos_embed", "c_pos_embed", "c_tokens"]:
-            params["no_reg_0"]["params"].append(getattr(m, t))
+    for n, p in model.inner.model.named_parameters():
+        if "token" not in n or "pos_embed" not in n:
+            continue
+        params["no_reg_0"]["params"].append(p)
 
     # Store all curr params
     seen = set()
