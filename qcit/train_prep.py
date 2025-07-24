@@ -90,6 +90,8 @@ def load_model(args):
         optimizers[name] = opt = torch.optim.AdamW([*params.values()], fused=True)
         scalers[name] = scaler = torch.amp.GradScaler("cuda")
         m.backward = PushGrad(opt, scaler, args)
+        if hasattr(m.inner.model, "init"):
+            m.inner.model.init()
 
     opt_scheduler = OptScheduler(optimizers, args, args.exp)
     if args.checkpoint_path:
@@ -119,11 +121,7 @@ def load_model(args):
     for m in args.kw.get("pop_model", []):
         print(f"INFO: Removing model {m} from models")
         for d in models, optimizers, scalers:
-            d.pop(m)     
-    
-    for m in models.values():
-        if hasattr(m.inner.model, "init"):
-            m.inner.model.init()
+            d.pop(m)
 
     if args.compile:
         print("INFO: Compiling model")
