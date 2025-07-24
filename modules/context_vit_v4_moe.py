@@ -475,8 +475,8 @@ class ContextViTv4MoE(nn.Module):
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        n_C=32,
-        bank_size=1,
+        bank_size=32,
+        bank_depth=1,
         proj_query_bank=False,
         flash_mlp=False,
         return_cls_only=True,
@@ -500,14 +500,14 @@ class ContextViTv4MoE(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        assert n_C >= 1, "n_C needs to be 1 or more"
+        assert bank_size >= 1, "n_C needs to be 1 or more"
         self.num_features = self.embed_dim = embed_dim
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
-        self.n_C = n_C
+        self.bank_size = bank_size
         self.return_cls_only = return_cls_only
 
         self.patch_embed = embed_layer(
@@ -518,7 +518,7 @@ class ContextViTv4MoE(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.cls_token = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.query_tokens = nn.Parameter(torch.zeros(bank_size, self.n_C, embed_dim))
+        self.query_tokens = nn.Parameter(torch.zeros(bank_depth, bank_size, embed_dim))
         num_pos_emb = 1 + self.n_registers + self.n_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
