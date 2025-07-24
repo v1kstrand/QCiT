@@ -115,6 +115,10 @@ def load_model(args):
     else:
         print("INFO: Initializing new model")
     args.exp_init = False
+    
+    for m in models.values():
+        if hasattr(m, "init"):
+            m.init()
 
     if args.compile:
         print("INFO: Compiling model")

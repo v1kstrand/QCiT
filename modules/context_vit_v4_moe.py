@@ -551,6 +551,10 @@ class ContextViTv4MoE(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
+        
+    def init(self):
+        for b in self.blocks:
+            b.attn.query_bank = self.tok_query_bank
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
@@ -559,9 +563,6 @@ class ContextViTv4MoE(nn.Module):
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
-        if self.blocks[0].attn.query_bank is None:
-            for b in self.blocks:
-                b.attn.query_bank = self.tok_query_bank
         
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
