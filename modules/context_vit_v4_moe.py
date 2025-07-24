@@ -563,7 +563,6 @@ class ContextViTv4MoE(nn.Module):
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
-        
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
