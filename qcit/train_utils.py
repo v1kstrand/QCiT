@@ -53,8 +53,8 @@ def init_model(model, args):
             regularized.append(param)
             reg_id.add(id(param))
 
-    base_lr = (args.opt["lr"][0] * args.batch_size) / args.opt["lr"][2]
-    wd = args.opt["wd"][0]
+    base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
+    wd = args.opt["wd_peak"]
     layer_decay = args.opt["ld"]
     n_layers = args.vkw["n_layers"]
     def set_param_group(lr, wd):
@@ -106,12 +106,12 @@ class OptScheduler(nn.Module):
         super().__init__()
         self.optimizers = optimizers
         factor = args.steps_p_epoch if batch_to_step else 1
-        self.wu_steps = args.opt["lr_wu"]["steps"] * factor
-        self.wu_start = args.opt["lr_wu"]["init"]
-        self.dec_steps = args.opt["dec_steps"] * factor
-        self.lr_end = args.opt["lr"][1]
-        self.wd_start = args.opt["wd"][0]
-        self.wd_end = args.opt["wd"][1]
+        self.wu_steps = args.opt["steps_wu"] * factor
+        self.wu_start = args.opt["lr_init"]
+        self.dec_steps = args.opt["steps_dec"] * factor
+        self.lr_end = args.opt["lr_final"]
+        self.wd_start = args.opt["wd_init"]
+        self.wd_end = args.opt["wd_final"]
         self.curr_step = 1
         self.exp = exp
         print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
