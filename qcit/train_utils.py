@@ -83,8 +83,7 @@ def init_model(model, args):
     for n, p in model.inner.model.named_parameters(recurse=False):
         if not n.startswith("tok_"):
             continue
-        #params["no_reg_0"]["params"].append(p)
-        print(f"DEBUG: Adding {n} to no_reg_0 from {model.inner.model.__class__.__name__}")
+        params["no_reg_0"]["params"].append(p)
 
     # Store all curr params
     seen = set()

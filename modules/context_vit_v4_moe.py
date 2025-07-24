@@ -121,7 +121,7 @@ class ContextAttentionMoE(nn.Module):
     def __init__(
         self,
         dim: int,
-        query_bank: int,
+        query_bank_size: int,
         proj_query_bank: bool = False,
         num_heads: int = 8,
         qkv_bias: bool = False,
@@ -135,9 +135,9 @@ class ContextAttentionMoE(nn.Module):
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.sdpa = F.scaled_dot_product_attention
-        self.query_bank = query_bank
-        if query_bank.size(0) > 1:
-            self.cls_to_weights = nn.Linear(dim, query_bank.size(0))
+        self.query_bank = None
+        if query_bank_size > 1:
+            self.cls_to_weights = nn.Linear(dim, query_bank_size)
         self.query_ln = nn.LayerNorm(dim) if proj_query_bank else nn.Identity()
         self.query_proj = nn.Linear(dim, dim, bias=qkv_bias) if proj_query_bank else nn.Identity()
 
@@ -241,7 +241,7 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
-        query_tokens: int,
+        query_bank_size: int,
         proj_query_bank: bool = False,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
@@ -259,7 +259,7 @@ class Block(nn.Module):
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
         self.attn = ContextAttentionMoE(
             dim,
-            query_bank=query_tokens,
+            query_bank_size=query_bank_size,
             proj_query_bank=proj_query_bank,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -518,7 +518,7 @@ class ContextViTv4MoE(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.tok_query = nn.Parameter(torch.zeros(bank_depth, bank_size, embed_dim))
+        self.tok_query_bank = nn.Parameter(torch.zeros(bank_depth, bank_size, embed_dim))
         num_pos_emb = 1 + self.n_registers + self.n_patches
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
@@ -541,7 +541,7 @@ class ContextViTv4MoE(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                query_tokens=self.tok_query,
+                query_bank_size=bank_size,
                 proj_query_bank=proj_query_bank,
                 flash_mlp=flash_mlp,
             )
@@ -555,10 +555,14 @@ class ContextViTv4MoE(nn.Module):
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_cls, std=1e-6)
-        nn.init.normal_(self.tok_query, std=1e-6)
+        nn.init.normal_(self.tok_query_bank, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
+        if self.blocks[0].attn.query_bank is not None:
+            for b in self.blocks:
+                b.attn.query_bank = self.tok_query_bank
+        
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
