@@ -54,7 +54,7 @@ def init_model(model, args):
             reg_id.add(id(param))
 
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
-    wd = args.opt["wd_peak"]
+    wd = args.opt["wd_final"]
     layer_decay = args.opt["ld"]
     n_layers = args.vkw["n_layers"]
     def set_param_group(lr, wd):
