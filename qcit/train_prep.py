@@ -116,6 +116,11 @@ def load_model(args):
         print("INFO: Initializing new model")
     args.exp_init = False
     
+    for m in args.kw.get("pop_model", []):
+        print(f"INFO: Removing model {m} from models")
+        for d in models, optimizers, scalers:
+            d.pop(m)     
+    
     for m in models.values():
         if hasattr(m.inner.model, "init"):
             m.inner.model.init()
