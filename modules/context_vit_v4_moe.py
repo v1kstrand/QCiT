@@ -117,17 +117,17 @@ class Mlp(nn.Module):
 # In[4]:
 
 
-class ContextAttention(nn.Module):
+class ContextAttentionMoE(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_C: int,
+        query_bank: int,
+        proj_query_bank: bool = False,
         num_heads: int = 8,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        compressor_proj_init_split: float = 1e-4,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -135,22 +135,21 @@ class ContextAttention(nn.Module):
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.sdpa = F.scaled_dot_product_attention
-        self.num_C = num_C
+        self.query_bank = query_bank
+        if query_bank.size(0) > 1:
+            self.cls_to_weights = nn.Linear(dim, query_bank.size(0))
+        self.query_ln = nn.LayerNorm(dim) if proj_query_bank else nn.Identity()
+        self.query_proj = nn.Linear(dim, dim, bias=qkv_bias) if proj_query_bank else nn.Identity()
 
         # — Proj —
         self.P_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.C_to_q = nn.Identity()
         self.ctx_to_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
 
         # — Dropout —
         self.attn_drop_v = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
-        self.ls_a = LayerScale(dim, init_values=1 - compressor_proj_init_split)
-        self.ls_b = LayerScale(dim, init_values=compressor_proj_init_split)
-
         # — Out proj —
-        self.out_C = nn.Linear(dim, dim, bias=proj_bias)
         self.out_P = nn.Linear(dim, dim, bias=proj_bias)
 
     def sdpa_w_reshape(self, q, k, v):
@@ -175,16 +174,26 @@ class ContextAttention(nn.Module):
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
             return self._forward(x)
 
-    def forward(self, x: Tensor) -> Tensor:
-        C, P = x[:, :self.num_C, :], x[:, self.num_C:, :]
-        # 1) FlashNorm Proj
+    def forward(self, x) -> Tensor:
+        B, K, M, _  = x.size(0), *self.query_bank.size()
+        
+        if K > 1:
+            weights = torch.softmax(self.cls_to_weights(x[:, 0, :]), dim=-1)  # [B, K]
+            compressors = (weights.unsqueeze(-1).unsqueeze(-1) * self.query_bank).sum(
+                dim=1
+            )  # [B, M, D]
+        else:
+            compressors = self.query_bank[0].unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
+
+        compressors = self.query_proj(self.query_ln(compressors))  # [B, M, D]
+        q = compressors.reshape(B, M, self.n_h, self.h_d).transpose(1, 2)  # [B, H, M, D]
+        # 1) Proj
         with torch.profiler.record_function("FlashProj QKV: P"):
-            q_P, k_P, v_P = self.proj(P, self.P_to_qkv, 3)
-            C, *_ = self.proj(C, self.C_to_q, -1)
+            q_P, k_P, v_P = self.proj(x, self.P_to_qkv, 3)
 
         # 2) Patches ← Compressors
         with torch.profiler.record_function("Ca: P <- C"):
-            ca_ctx = self.sdpa_w_reshape(C, k_P, v_P)
+            ca_ctx = self.sdpa_w_reshape(q, k_P, v_P)
 
         # 3) Patches ← Context
         with torch.profiler.record_function("FlashProj KV: ctx"):
@@ -193,16 +202,11 @@ class ContextAttention(nn.Module):
         with torch.profiler.record_function("Ca: P <- ctx"):
             ca_P = self.sdpa_w_reshape(q_P, k_ctx, v_ctx)
 
-        # 4) Compressors ← Self
-        with torch.profiler.record_function("Ca: P <- ctx"):
-            sa_C = self.sdpa_w_reshape(C, C, C)
-
         # 5) Output projections
         with torch.profiler.record_function("Proj Out: C, P, ctx"):
-            out_C = self.out_drop(self.out_C(self.ls_a(sa_C) + self.ls_b(ca_ctx)))
-            out_P = self.out_drop(self.out_P(ca_P))
+            out_x = self.out_drop(self.out_P(ca_P))
             
-        return torch.cat((out_C, out_P), dim=1)  # [B, C+P, d]
+        return out_x
 
 # # Block
 
@@ -237,7 +241,8 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
-        n_C: int,
+        query_tokens: int,
+        proj_query_bank: bool = False,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -252,9 +257,10 @@ class Block(nn.Module):
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
-        self.attn = ContextAttention(
+        self.attn = ContextAttentionMoE(
             dim,
-            num_C=n_C,
+            query_bank=query_tokens,
+            proj_query_bank=proj_query_bank,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             proj_bias=proj_bias,
@@ -449,7 +455,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv4(nn.Module):
+class ContextViTv4MoE(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -470,6 +476,8 @@ class ContextViTv4(nn.Module):
         token_drop=0,
         n_registers=0,
         n_C=32,
+        bank_size=1,
+        proj_query_bank=False,
         flash_mlp=False,
         return_cls_only=True,
     ):
@@ -509,10 +517,9 @@ class ContextViTv4(nn.Module):
             embed_dim=embed_dim,
         )
         self.n_patches = self.patch_embed.n_patches
-
         self.cls_token = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.C_tokens = nn.Parameter(torch.zeros(1, self.n_C, embed_dim))
-        num_pos_emb = self.n_C + 1 + self.n_registers + self.n_patches
+        self.query_tokens = nn.Parameter(torch.zeros(bank_size, self.n_C, embed_dim))
+        num_pos_emb = 1 + self.n_registers + self.n_patches
         self.pos_embed = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -534,7 +541,8 @@ class ContextViTv4(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                n_C=n_C,
+                query_tokens=self.query_tokens,
+                proj_query_bank=proj_query_bank,
                 flash_mlp=flash_mlp,
             )
             for i in range(depth)
@@ -547,7 +555,7 @@ class ContextViTv4(nn.Module):
     def init_weights(self):
         trunc_normal_(self.pos_embed, std=0.02)
         nn.init.normal_(self.cls_token, std=1e-6)
-        nn.init.normal_(self.C_tokens, std=1e-6)
+        nn.init.normal_(self.query_tokens, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
@@ -555,14 +563,10 @@ class ContextViTv4(nn.Module):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
             cls_token = self.cls_token.expand(x.shape[0], -1, -1)
-            C = (
-                self.C_tokens.expand(x.shape[0], -1, -1)
-                + self.pos_embed[:, : self.n_C, :]
-            )
-            P = torch.cat((cls_token, x), dim=1) + self.pos_embed[:, self.n_C :, :]
+            x = torch.cat((cls_token, x), dim=1) + self.pos_embed
         with torch.profiler.record_function("Token Drop"):
-            P = self.token_drop(P)
-        return torch.cat((C, P), dim=1)  # [B, M+N, D]
+            x = self.token_drop(x)
+        return x
 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
@@ -581,7 +585,6 @@ class ContextViTv4(nn.Module):
         x = self.prepare_tokens(x)
         for blk in self.blocks:
             x = blk(x)
-        x = x[:, self.n_C :, :]  # [B, N, D]
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
         return out[:, 0, :] if self.return_cls_only else out
