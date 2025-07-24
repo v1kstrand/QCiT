@@ -117,8 +117,8 @@ def load_model(args):
     args.exp_init = False
     
     for m in models.values():
-        if hasattr(m, "init"):
-            m.init()
+        if hasattr(m.inner.model, "init"):
+            m.inner.model.init()
 
     if args.compile:
         print("INFO: Compiling model")
