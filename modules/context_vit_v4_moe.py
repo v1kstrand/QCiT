@@ -559,7 +559,7 @@ class ContextViTv4MoE(nn.Module):
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
-        if self.blocks[0].attn.query_bank is not None:
+        if self.blocks[0].attn.query_bank is None:
             for b in self.blocks:
                 b.attn.query_bank = self.tok_query_bank
         
