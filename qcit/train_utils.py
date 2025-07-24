@@ -80,7 +80,7 @@ def init_model(model, args):
         params[group]["params"].append(p)
 
     # Tokens
-    for n, p in model.inner.model.named_parameters():
+    for n, p in model.inner.model.named_parameters(recurse=False):
         if "token" not in n or "pos_embed" not in n:
             continue
         params["no_reg_0"]["params"].append(p)
