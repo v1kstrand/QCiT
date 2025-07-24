@@ -116,7 +116,7 @@ class Mlp(nn.Module):
 # In[4]:
 
 
-class ContextAttentionMoEV1(nn.Module):
+class ContextAttentionMoE(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -126,6 +126,7 @@ class ContextAttentionMoEV1(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        use_memory: bool = False,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -137,6 +138,7 @@ class ContextAttentionMoEV1(nn.Module):
         self.cls_to_weights = nn.Linear(dim, bank_depth)
         self.query_ln = nn.LayerNorm(dim)
         self.query_proj = nn.Linear(dim, dim, bias=qkv_bias)
+        assert use_memory is False, "not implemented yet"
 
         # — Proj —
         self.P_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -159,21 +161,24 @@ class ContextAttentionMoEV1(nn.Module):
         y = y.permute(2, 0, 3, 1, 4)  # [n, B, H, L, hd]
         return (*y,)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, mem=None) -> Tensor:
+        assert (
+            self.query_bank is not None
+        ), "Query bank is not initialized, call init() first"
         if SDP_KERNEL_THRESHOLD == -1:
             print(
                 "Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method"
             )
-            return self._forward(x)
+            return self._forward(x, mem)
         if x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
-            return self._forward(x)
+            return self._forward(x, mem)
 
-    def _forward(self, x) -> Tensor:
+    def _forward(self, x, mem=None) -> Tensor:
         B, K, M, _ = x.size(0), *self.query_bank.size()
 
         if K > 1:
@@ -207,10 +212,10 @@ class ContextAttentionMoEV1(nn.Module):
         with torch.profiler.record_function("Proj Out: C, P, ctx"):
             out_x = self.out_drop(self.out_P(ca_P))
 
-        return out_x
+        return out_x, None
 
 
-class ContextAttentionMoE(nn.Module):
+class ContextAttentionMoE_(nn.Module):
     def __init__(
         self,
         dim: int,
