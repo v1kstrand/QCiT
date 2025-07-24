@@ -510,10 +510,10 @@ class ContextViTv4(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.C_tokens = nn.Parameter(torch.zeros(1, self.bank_size, embed_dim))
+        self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
+        self.tok_C = nn.Parameter(torch.zeros(1, self.bank_size, embed_dim))
         num_pos_emb = self.bank_size + 1 + self.n_registers + self.n_patches
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
+        self.tok_pos = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
@@ -545,21 +545,21 @@ class ContextViTv4(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        trunc_normal_(self.pos_embed, std=0.02)
-        nn.init.normal_(self.cls_token, std=1e-6)
-        nn.init.normal_(self.C_tokens, std=1e-6)
+        trunc_normal_(self.tok_pos, std=0.02)
+        nn.init.normal_(self.tok_cls, std=1e-6)
+        nn.init.normal_(self.tok_C, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
-            cls_token = self.cls_token.expand(x.shape[0], -1, -1)
+            cls_token = self.tok_cls.expand(x.shape[0], -1, -1)
             C = (
-                self.C_tokens.expand(x.shape[0], -1, -1)
-                + self.pos_embed[:, : self.bank_size, :]
+                self.tok_C.expand(x.shape[0], -1, -1)
+                + self.tok_pos[:, : self.bank_size, :]
             )
-            P = torch.cat((cls_token, x), dim=1) + self.pos_embed[:, self.bank_size :, :]
+            P = torch.cat((cls_token, x), dim=1) + self.tok_pos[:, self.bank_size :, :]
         with torch.profiler.record_function("Token Drop"):
             P = self.token_drop(P)
         return torch.cat((C, P), dim=1)  # [B, M+N, D]
