@@ -112,8 +112,7 @@ def load_model(args):
             models[n].load_state_dict(checkpoint["model"][n])
             models[n].backward.optimizer.load_state_dict(checkpoint["optimizer"][n])
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
-        if checkpoint.get("opt_scheduler"):
-            opt_scheduler.load_state_dict(checkpoint["opt_scheduler"])
+        opt_scheduler.load_state_dict(checkpoint["opt_scheduler"])
     else:
         print("INFO: Initializing new model")
     args.exp_init = False
