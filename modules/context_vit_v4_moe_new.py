@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Imports 
+# # Imports
 
 # In[1]:
 
@@ -55,8 +55,6 @@ class FlashNormLinear(nn.Linear):
         # Fuse scaling into weight
         scaled_weight = self.weight * self.rms_weight.unsqueeze(0)
         return F.linear(x, scaled_weight, self.bias)
-
-
 
 
 class FlashMlp(nn.Module):
@@ -114,6 +112,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
 # In[4]:
 
 
@@ -121,13 +120,13 @@ class ContextAttentionMoE(nn.Module):
     def __init__(
         self,
         dim: int,
-        query_bank_depth: int,
-        proj_query_bank: bool = False,
+        bank_depth: int,
         num_heads: int = 8,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        use_memory: bool = False,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -136,10 +135,10 @@ class ContextAttentionMoE(nn.Module):
         self.h_d = dim // num_heads
         self.sdpa = F.scaled_dot_product_attention
         self.query_bank = None
-        if query_bank_depth > 1:
-            self.cls_to_weights = nn.Linear(dim, query_bank_depth)
-        self.query_ln = nn.LayerNorm(dim) if proj_query_bank else nn.Identity()
-        self.query_proj = nn.Linear(dim, dim, bias=qkv_bias) if proj_query_bank else nn.Identity()
+        self.cls_to_weights = nn.Linear(dim, bank_depth)
+        self.query_ln = nn.LayerNorm(dim)
+        self.query_proj = nn.Linear(dim, dim, bias=qkv_bias)
+        assert use_memory is False, "not implemented yet"
 
         # — Proj —
         self.P_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -148,7 +147,7 @@ class ContextAttentionMoE(nn.Module):
         # — Dropout —
         self.attn_drop_v = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
-        
+
         # — Out proj —
         self.out_P = nn.Linear(dim, dim, bias=proj_bias)
 
@@ -161,22 +160,28 @@ class ContextAttentionMoE(nn.Module):
         y = W(x).view(x.size(0), x.size(1), n, self.n_h, self.h_d)
         y = y.permute(2, 0, 3, 1, 4)  # [n, B, H, L, hd]
         return (*y,)
-    
-    def forward(self, x: Tensor) -> Tensor:
+
+    def forward(self, x: Tensor, mem=None) -> Tensor:
+        assert (
+            self.query_bank is not None
+        ), "Query bank is not initialized, call init() first"
         if SDP_KERNEL_THRESHOLD == -1:
-            print("Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method")
-            return self._forward(x)
+            print(
+                "Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method"
+            )
+            return self._forward(x, mem)
         if x.size(1) > SDP_KERNEL_THRESHOLD:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
-            return self._forward(x)
+            return self._forward(x, mem)
 
-    def forward(self, x) -> Tensor:
-        B, K, M, _  = x.size(0), *self.query_bank.size()
-        
+    def _forward(self, x, mem=None) -> Tensor:
+        assert mem is None, "Not implemented yet"
+        B, K, M, _ = x.size(0), *self.query_bank.size()
+
         if K > 1:
             weights = torch.softmax(self.cls_to_weights(x[:, 0, :]), dim=-1)  # [B, K]
             compressors = (weights.unsqueeze(-1).unsqueeze(-1) * self.query_bank).sum(
@@ -186,7 +191,9 @@ class ContextAttentionMoE(nn.Module):
             compressors = self.query_bank[0].unsqueeze(0).expand(B, -1, -1)  # [B, M, D]
 
         compressors = self.query_proj(self.query_ln(compressors))  # [B, M, D]
-        q = compressors.reshape(B, M, self.n_h, self.h_d).transpose(1, 2)  # [B, H, M, D]
+        q = compressors.reshape(B, M, self.n_h, self.h_d).transpose(
+            1, 2
+        )  # [B, H, M, D]
         # 1) Proj
         with torch.profiler.record_function("FlashProj QKV: P"):
             q_P, k_P, v_P = self.proj(x, self.P_to_qkv, 3)
@@ -205,8 +212,116 @@ class ContextAttentionMoE(nn.Module):
         # 5) Output projections
         with torch.profiler.record_function("Proj Out: C, P, ctx"):
             out_x = self.out_drop(self.out_P(ca_P))
-            
-        return out_x
+
+        return out_x, None
+
+
+class ContextAttentionMoE_(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        bank_depth: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        attn_drop: float = 0.0,
+        proj_bias: bool = True,
+        proj_drop: float = 0.0,
+        mlp_ratio: int = 4,
+        use_memory: bool = True,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        self.dim = dim
+        self.n_h = num_heads
+        self.h_d = dim // num_heads
+        self.sdpa = F.scaled_dot_product_attention
+        self.query_bank = None  # this is assigned later to not let the optimizer add the bank multiple times
+        if use_memory:
+            self.mem_scale = nn.Parameter(torch.ones(dim))
+            torch.nn.init.trunc_normal_(self.mem_scale, std=1e-4)
+
+        self.cls_to_weights = nn.Sequential(
+            nn.Linear(dim, dim * mlp_ratio),
+            nn.GELU(),
+            nn.Linear(dim * mlp_ratio, bank_depth),
+        )
+        self.query_ln = nn.LayerNorm(dim)
+
+        # — Proj —
+        self.P_to_qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.ctx_to_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+
+        # — Dropout —
+        self.attn_drop_v = attn_drop
+        self.out_drop = nn.Dropout(proj_drop)
+
+        # — Out proj —
+        self.out_P = nn.Linear(dim, dim, bias=proj_bias)
+
+    def sdpa_w_reshape(self, q, k, v):
+        B, H, L, h_d = q.size()
+        attn = self.sdpa(q, k, v, dropout_p=self.attn_drop_v)
+        return attn.transpose(1, 2).reshape(B, L, self.dim)
+
+    def proj(self, x: Tensor, W: nn.Linear, n: int) -> tuple[Tensor, ...]:
+        y = W(x).view(x.size(0), x.size(1), n, self.n_h, self.h_d)
+        y = y.permute(2, 0, 3, 1, 4)  # [n, B, H, L, hd]
+        return (*y,)
+
+    def get_query(self, x, mem=None):
+        M = self.query_bank.size(1)
+        B, H, D = x.size(0), self.n_h, self.h_d
+        weights = torch.softmax(self.cls_to_weights(x[:, 0, :]), dim=-1)  # [B, K]
+
+        if hasattr(self, "mem_scale"):
+            assert mem is not None, "Memory must be provided when using memory scaling"
+            query_bank = self.query_bank + mem * self.mem_scale
+        else:
+            query_bank = self.query_bank
+
+        banks = self.query_ln(F.gelu(query_bank))  # [K, M, D]
+        banks = weights.unsqueeze(-1).unsqueeze(-1) * banks.unsqueeze(0)  # [B, K, M, D]
+        return banks.sum(dim=1).reshape(B, M, H, D).transpose(1, 2)  # [B, H, M, D]
+
+    def _forward(self, x, mem=None) -> Tensor:
+        with torch.profiler.record_function("Get Query"):
+            q = self.get_query(x, mem)  # [B, H, M, D]
+
+        with torch.profiler.record_function("Proj QKV: P"):
+            q_P, k_P, v_P = self.proj(x, self.P_to_qkv, 3)
+
+        with torch.profiler.record_function("Ca: P <- C"):
+            ca_ctx = self.sdpa_w_reshape(q, k_P, v_P)
+
+        with torch.profiler.record_function("proj KV: ctx"):
+            k_ctx, v_ctx = self.proj(ca_ctx, self.ctx_to_kv, 2)
+
+        with torch.profiler.record_function("Ca: P <- ctx"):
+            ca_P = self.sdpa_w_reshape(q_P, k_ctx, v_ctx)
+
+        with torch.profiler.record_function("Proj Out: C, ctx"):
+            out_x = self.out_drop(self.out_P(ca_P))
+            out_mem = self.out_drop(self.out_P(ca_ctx)) if mem is not None else None
+
+        return out_x, out_mem
+
+    def forward(self, x: Tensor, mem=None) -> Tensor:
+        assert (
+            self.query_bank is not None
+        ), "Query bank is not initialized, call init() first"
+        if SDP_KERNEL_THRESHOLD == -1:
+            print(
+                "Warning: SDP_KERNEL_THRESHOLD is set to -1, using default forward method"
+            )
+            return self._forward(x, mem)
+        if x.size(1) > SDP_KERNEL_THRESHOLD:
+            sdp_kernel = SDPBackend.FLASH_ATTENTION
+        else:
+            sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
+
+        with torch.nn.attention.sdpa_kernel(sdp_kernel):
+            return self._forward(x, mem)
+
 
 # # Block
 
@@ -236,13 +351,13 @@ class DropPath(nn.Module):
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
 
+
 class Block(nn.Module):
     def __init__(
         self,
         dim: int,
         num_heads: int,
-        query_bank_depth: int,
-        proj_query_bank: bool = False,
+        bank_depth: int,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -254,31 +369,30 @@ class Block(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
+        use_memory: bool = False,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
         self.attn = ContextAttentionMoE(
             dim,
-            query_bank_depth=query_bank_depth,
-            proj_query_bank=proj_query_bank,
+            bank_depth=bank_depth,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
+            use_memory=use_memory,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
         )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-
         self.norm2 = norm_layer(dim) if not flash_mlp else nn.Identity()
-        mlp_hidden_dim = int(dim * mlp_ratio)
 
         ffn_layer = FlashMlp if flash_mlp else Mlp
         self.mlp = ffn_layer(
             in_features=dim,
-            hidden_features=mlp_hidden_dim,
+            hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
             drop=drop,
             bias=ffn_bias,
@@ -289,32 +403,35 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor) -> Tensor:
-        def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x)))
+    def attn_residual_func(self, x: Tensor, mem) -> Tensor:
+        x_out, mem_out = self.attn(self.norm1(x), mem)
+        return self.ls1(x_out), mem_out
 
-        def ffn_residual_func(x: Tensor) -> Tensor:
-            return self.ls2(self.mlp(self.norm2(x)))
+    def ffn_residual_func(self, x: Tensor) -> Tensor:
+        return self.ls2(self.mlp(self.norm2(x)))
 
+    def forward(self, x, mem=None) -> Tensor:
         if self.training and self.sample_drop_ratio > 0.1:
+            assert False, "not implemented yet"
             # the overhead is compensated only for a drop path rate larger than 0.1
             x = drop_add_residual_stochastic_depth(
                 x,
-                residual_func=attn_residual_func,
+                residual_func=self.attn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
             x = drop_add_residual_stochastic_depth(
                 x,
-                residual_func=ffn_residual_func,
+                residual_func=self.ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
         elif self.training and self.sample_drop_ratio > 0.0:
-            x = x + self.drop_path1(attn_residual_func(x))
-            x = x + self.drop_path2(ffn_residual_func(x))
+            x_out, mem_out = self.attn_residual_func(x, mem)
+            x = x + self.drop_path1(x_out)
+            x = x + self.drop_path2(self.ffn_residual_func(x))
         else:
-            x = x + attn_residual_func(x)
-            x = x + ffn_residual_func(x)
-        return x
+            x_out, mem_out = self.attn_residual_func(x, mem)
+            x = x + self.ffn_residual_func(x + x_out)
+        return x, mem_out
 
 
 def drop_add_residual_stochastic_depth(
@@ -340,6 +457,7 @@ def drop_add_residual_stochastic_depth(
         x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor
     )
     return x_plus_residual.view_as(x)
+
 
 # # Patch Embed
 
@@ -477,9 +595,9 @@ class ContextViTv4MoE(nn.Module):
         n_registers=0,
         bank_size=32,
         bank_depth=1,
-        proj_query_bank=False,
         flash_mlp=False,
         return_cls_only=True,
+        use_query_memory=False,
     ):
         """
         Args:
@@ -509,6 +627,7 @@ class ContextViTv4MoE(nn.Module):
         self.n_registers = n_registers
         self.bank_size = bank_size
         self.return_cls_only = return_cls_only
+        self.use_query_memory = use_query_memory
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -518,7 +637,12 @@ class ContextViTv4MoE(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        self.tok_query_bank = nn.Parameter(torch.zeros(bank_depth, bank_size, embed_dim))
+        self.tok_query_bank = nn.Parameter(
+            torch.zeros(bank_depth, bank_size, embed_dim)
+        )
+        if use_query_memory:
+            self.tok_query_memory = nn.Parameter(torch.zeros(embed_dim))
+
         num_pos_emb = 1 + self.n_registers + self.n_patches
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
@@ -541,9 +665,9 @@ class ContextViTv4MoE(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                query_bank_depth=bank_depth,
-                proj_query_bank=proj_query_bank,
+                bank_depth=bank_depth,
                 flash_mlp=flash_mlp,
+                use_memory=use_query_memory,
             )
             for i in range(depth)
         ]
@@ -551,7 +675,7 @@ class ContextViTv4MoE(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
-        
+
     def init(self):
         for b in self.blocks:
             b.attn.query_bank = self.tok_query_bank
@@ -560,6 +684,8 @@ class ContextViTv4MoE(nn.Module):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_cls, std=1e-6)
         nn.init.normal_(self.tok_query_bank, std=1e-6)
+        if self.use_query_memory:
+            nn.init.normal_(self.tok_query_memory, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
@@ -587,8 +713,9 @@ class ContextViTv4MoE(nn.Module):
 
     def forward(self, x):
         x = self.prepare_tokens(x)
+        mem = self.tok_query_memory if self.use_query_memory else None
         for blk in self.blocks:
-            x = blk(x)
+            x, mem = blk(x, mem)
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
         return out[:, 0, :] if self.return_cls_only else out
