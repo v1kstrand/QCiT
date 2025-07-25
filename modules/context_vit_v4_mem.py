@@ -114,7 +114,7 @@ class Mlp(nn.Module):
 
 
 
-class ContextAttentionMem(nn.Module):
+class ContextAttentionMeM(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -134,6 +134,7 @@ class ContextAttentionMem(nn.Module):
         self.n_h = num_heads
         self.h_D = dim // num_heads
         self.h_d = qk_head_dim
+        self.M = bank_size
         self.sdpa = F.scaled_dot_product_attention
         
         # Compressor Bank
@@ -173,14 +174,14 @@ class ContextAttentionMem(nn.Module):
         return [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_split]
 
     def get_bank_query(self, B, mem=None):
-        if mem is None or mem is True:                
-            return self.query_bank.expand(B, -1, -1)
+        if mem is None or mem is True:            
+            return self.query_bank.expand(B, -1, -1).view(B, self.M, self.n_h, -1).transpose(1, 2)
         query_bank = self.query_bank + mem * self.mem_scale
-        return self.proj(self.bank_norm(query_bank), self.bank_to_q, self.split_bank)  # [B, H, M, D]
+        return self.proj(self.bank_norm(query_bank), self.bank_to_q, self.split_bank)[0]  # [B, H, M, D]
 
     def _forward(self, x, mem=None) -> Tensor:
         with torch.profiler.record_function("Get Query"):
-            bankQ = self.get_bank_query(x.size(0), mem)[0]  # [B, H, M, d] O(Md^2 + Md) 
+            bankQ = self.get_bank_query(x.size(0), mem)  # [B, H, M, d] O(Md^2 + Md) 
 
         with torch.profiler.record_function("Proj QKV: X"):
             xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d] O(3d^2)
@@ -268,7 +269,7 @@ class Block(nn.Module):
         super().__init__()
         self.sdp_threshold = sdp_threshold
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
-        self.attn = ContextAttentionMem(
+        self.attn = ContextAttentionMeM(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
