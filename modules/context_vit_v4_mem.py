@@ -167,24 +167,23 @@ class ContextAttentionMem(nn.Module):
         attn = self.sdpa(q, k, v, dropout_p=self.attn_drop_v)
         return attn.transpose(1, 2).reshape(B, N, -1)
 
-    def proj(self, x, W, split_dims) -> tuple[Tensor, ...]:
+    def proj(self, x, W, split_dims):
         B, N, _ = x.size()
         x_split = torch.split(W(x), split_dims, dim=-1)
         return [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_split]
 
     def get_bank_query(self, B, mem=None):
-        if mem is not None and mem is not True:                
-            query_bank = self.query_bank + mem * self.mem_scale
-        else:
-            query_bank = self.query_bank.expand(B, -1, -1)
+        if mem is None or mem is True:                
+            return self.query_bank.expand(B, -1, -1)
+        query_bank = self.query_bank + mem * self.mem_scale
         return self.proj(self.bank_norm(query_bank), self.bank_to_q, self.split_bank)  # [B, H, M, D]
 
     def _forward(self, x, mem=None) -> Tensor:
         with torch.profiler.record_function("Get Query"):
-            bankQ = self.get_bank_query(x.size(0), mem)[0]  # [B, H, M, D] O(Md^2 + Md) 
+            bankQ = self.get_bank_query(x.size(0), mem)[0]  # [B, H, M, d] O(Md^2 + Md) 
 
         with torch.profiler.record_function("Proj QKV: X"):
-            xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d/D] O(3d^2)
+            xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d] O(3d^2)
 
         with torch.profiler.record_function("Ca: X <- Bank"):
             ctx = self.sdpa_w_reshape(bankQ, xK, xV) # [B, M, d] O(NMd)
@@ -204,7 +203,7 @@ class ContextAttentionMem(nn.Module):
     def forward(self, x: Tensor, mem=None, threshold=None) -> Tensor:
         if threshold is None:
             print(
-                "Warning: threshold is set to -1, using default forward method"
+                "Warning: threshold is set to None, using default forward method"
             )
             return self._forward(x, mem)
         
