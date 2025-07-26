@@ -110,10 +110,6 @@ class Mlp(nn.Module):
         return x
 
 
-# In[4]:
-
-
-
 class ContextAttentionMeM(nn.Module):
     def __init__(
         self,
@@ -143,11 +139,11 @@ class ContextAttentionMeM(nn.Module):
         self.mem_scale = nn.Parameter(torch.ones(d))
 
         # — Proj —
-        self.x_to_qkv = nn.Linear(D, 3 * d, bias=qkv_bias)
+        self.x_to_qkv = nn.Linear(D, 2 * d + D, bias=qkv_bias)
         self.bank_to_q = nn.Linear(d, d, bias=qkv_bias)
-        self.ctx_to_kv = nn.Linear(d, d + D, bias=qkv_bias)
+        self.ctx_to_kv = nn.Linear(D, d + D, bias=qkv_bias)
         
-        self.split_x = (d, d, d)
+        self.split_x = (d, d, D)
         self.split_bank = d
         self.split_ctx = (d, D)
         
@@ -157,7 +153,7 @@ class ContextAttentionMeM(nn.Module):
 
         # — Out proj —
         self.out_x = nn.Linear(D, D, bias=proj_bias)
-        self.out_mem = nn.Linear(d, d, bias=proj_bias)
+        self.out_mem = nn.Linear(D, d, bias=proj_bias)
         
         with torch.no_grad():
             torch.nn.init.trunc_normal_(self.query_bank, std=0.02)
@@ -181,23 +177,23 @@ class ContextAttentionMeM(nn.Module):
 
     def _forward(self, x, mem=None) -> Tensor:
         with torch.profiler.record_function("Get Query"):
-            bankQ = self.get_bank_query(x.size(0), mem)  # [B, H, M, d] O(Md^2 + Md) 
+            bankQ = self.get_bank_query(x.size(0), mem)  # [B, H, M, d] O(Md^2 + Md)
 
         with torch.profiler.record_function("Proj QKV: X"):
-            xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d] O(3d^2)
+            xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d/D] O(N(2dD + D^2))
 
         with torch.profiler.record_function("Ca: X <- Bank"):
             ctx = self.sdpa_w_reshape(bankQ, xK, xV) # [B, M, d] O(NMd)
 
         with torch.profiler.record_function("proj KV: ctx"):
-            ctxK, ctxV = self.proj(ctx, self.ctx_to_kv, self.split_ctx) # [B, M, d/D] O(d^2 + dD)
+            ctxK, ctxV = self.proj(ctx, self.ctx_to_kv, self.split_ctx) # [B, M, d/D] O(M(dD + D^2))
 
         with torch.profiler.record_function("Ca: X <- ctx"):
             x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV) # [B, N, D] O(NMd)
 
         with torch.profiler.record_function("Proj Out: X, MEM"):
-            x_out = self.out_drop(self.out_x(x_attn)) # [B, N, D] O(D^2)
-            mem_out = self.out_drop(self.out_mem(ctx)) if mem is not None else None # [B, N, d] O(d^2)
+            x_out = self.out_drop(self.out_x(x_attn)) # [B, N, D] O(ND^2)
+            mem_out = self.out_drop(self.out_mem(ctx)) if mem is not None else None # [B, N, d] O(MDd)
 
         return x_out, mem_out
 
