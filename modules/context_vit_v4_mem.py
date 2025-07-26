@@ -112,9 +112,7 @@ class Mlp(nn.Module):
 
 
 class CLSControlledFusion(nn.Module):
-    def __init__(
-        self, dim, query_bank, norm_bank, hidden_mult=4, norm_layer=nn.LayerNorm
-    ):
+    def __init__(self, dim, query_bank, out_norm, hidden_mult=4):
         super().__init__()
         self.dim = dim
         hidden_dim = hidden_mult * dim
@@ -124,17 +122,13 @@ class CLSControlledFusion(nn.Module):
             nn.Linear(hidden_dim, 3),
         )
         self.query_bank = query_bank
-        self.norm_bank = norm_bank
-        self.out_norm = norm_layer(dim)
+        self.out_norm = out_norm
 
     def forward(self, cls_token, ctx_mem, bank_mem, B):
-        q = self.query_bank.expand(B, -1, -1)
-        c = ctx_mem
-        m = bank_mem
-
+        bank = self.query_bank.expand(B, -1, -1)
         weights = F.softmax(self.weight_proj(cls_token), dim=-1)
         w = weights.unsqueeze(-1).unsqueeze(-1)  # [B, 3, 1, 1]
-        sources = torch.stack([q, c, m], dim=1)  # [B, 3, M, D]
+        sources = torch.stack([bank, ctx_mem, bank_mem], dim=1)  # [B, 3, M, D]
         return self.out_norm((w * sources).sum(dim=1))
 
 
