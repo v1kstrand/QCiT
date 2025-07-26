@@ -84,7 +84,7 @@ def load_model(args):
     optimizers = {}
     scalers = {}
 
-    for i, name, kw in enumerate(args.models.items()):
+    for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
         params = init_model(m, args)
         optimizers[name] = opt = torch.optim.AdamW([*params.values()], fused=True)
