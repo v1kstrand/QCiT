@@ -111,25 +111,18 @@ class Mlp(nn.Module):
         return x
 
 
-class CLSControlledFusion(nn.Module):
-    def __init__(self, dim, query_bank, out_norm, hidden_mult=4):
+class WeightedFusion(nn.Module):
+    def __init__(self, query_bank, out_norm):
         super().__init__()
-        self.dim = dim
-        hidden_dim = hidden_mult * dim
-        self.weight_proj = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, 3),
-        )
+        self.weights = nn.Parameter(torch.tensor([1.0, 0.0, 0.0]))
         self.query_bank = query_bank
         self.out_norm = out_norm
 
-    def forward(self, cls_token, ctx_mem, bank_mem, B):
+    def forward(self, ctx_mem, bank_mem, B):
         bank = self.query_bank.expand(B, -1, -1)
-        weights = F.softmax(self.weight_proj(cls_token), dim=-1)
-        w = weights.unsqueeze(-1).unsqueeze(-1)  # [B, 3, 1, 1]
-        sources = torch.stack([bank, ctx_mem, bank_mem], dim=1)  # [B, 3, M, D]
-        return self.out_norm((w * sources).sum(dim=1))
+        w1, w2, w3 = torch.unbind(F.softmax(self.weights, -1))
+        fused = w1 * bank + w2 * ctx_mem + w3 * bank_mem
+        return self.out_norm(fused)
 
 
 class ContextAttentionMeM(nn.Module):
@@ -164,7 +157,7 @@ class ContextAttentionMeM(nn.Module):
         self.bank_memory = bank_memory
         self.bank_norm = norm_layer(D)
         if bank_cls_condition:
-            self.bank_fusion = CLSControlledFusion(D, self.query_bank, self.bank_norm)
+            self.bank_fusion = WeightedFusion(self.query_bank, self.bank_norm)
 
         self.ctx_norm = norm_layer(D)
         t = 3 if bank_memory else 2
@@ -186,34 +179,8 @@ class ContextAttentionMeM(nn.Module):
             return self.query_bank.expand(B, -1, -1)
         return self.bank_norm(self.query_bank + mem)
 
-    def __forward(self, x, mem=None) -> Tensor:
-        (B, N, _), M = x.size(), self.M
-
-        with torch.profiler.record_function("Proj: x -> QKV"):
-            x_proj = torch.chunk(self.proj_x(x), 3, dim=-1)
-            xQ, xK, xV = [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_proj]
-
-        with torch.profiler.record_function("Get Bank Query"):
-            bankQ = self.get_bank_query(B, mem)
-            bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, d]
-
-        with torch.profiler.record_function("Ca: X <- Bank"):
-            ctx = self.sdpa_w_reshape(bankQ, xK, xV)  # [B, M, d] O(NMD)
-
-        with torch.profiler.record_function("Proj: ctx -> KV & Mem"):
-            *ctx_kv, mem_out = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), 3, dim=-1)
-            ctxK, ctxV = [y.view(B, M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
-
-        with torch.profiler.record_function("Ca: X <- ctx"):
-            x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV)  # [B, N, D] O(NMD)
-
-        with torch.profiler.record_function("Proj: X -> out"):
-            x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
-
-        return x_out, mem_out
-
     def _forward(self, x, mem) -> Tensor:
-        (B, N, _), M = x.size(), self.M
+        B, N, _= x.size()
         ctx_mem, bank_mem = mem
         bank_out = ctx_out = None
 
@@ -229,7 +196,7 @@ class ContextAttentionMeM(nn.Module):
             elif not self.bank_cls_condition:
                 bankQ = self.bank_norm(self.query_bank + ctx_mem)  # [B, M, D]
             else:
-                bankQ = bank_out = self.bank_fusion(x[:, 0, :], ctx_mem, bank_mem, B)
+                bankQ = bank_out = self.bank_fusion(ctx_mem, bank_mem, B)
             bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, D]
 
         with torch.profiler.record_function("Ca: X <- Bank"):
@@ -240,7 +207,7 @@ class ContextAttentionMeM(nn.Module):
             ctx_kv = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), chunk, dim=-1)
             if self.bank_memory:
                 *ctx_kv, ctx_out = ctx_kv
-            ctxK, ctxV = [y.view(B, M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
+            ctxK, ctxV = [y.view(B, self.M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
 
         with torch.profiler.record_function("Ca: X <- ctx"):
             x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV)  # [B, N, D] O(NMD)
