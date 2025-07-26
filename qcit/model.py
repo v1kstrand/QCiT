@@ -75,7 +75,8 @@ class OuterModel(nn.Module):
                 torch.cuda.synchronize()
                 if time_it == 1:
                     stats[f"Time/{self.name} - Backward Pass"] = to_min(back_time)
-                stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
+                else:
+                    stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
         else:
             ce, acc1, acc5 = self.inner(imgs, labels)
 
