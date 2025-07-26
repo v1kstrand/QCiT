@@ -58,22 +58,22 @@ class OuterModel(nn.Module):
         if self.training:
             self.backward.zero()
             
-            if time_it:
-                start_time = time.perf_counter()
+            if time_it in (0, 1):
                 torch.cuda.synchronize()
+                start_time = time.perf_counter()
                 
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
             
-            if time_it and time_it == "both":
+            if time_it == 1:
                 torch.cuda.synchronize()
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
             
             self.backward(self.inner, ce)
             
-            if time_it:
+            if time_it in (0, 1):
                 torch.cuda.synchronize()
-                if time_it == "both":
+                if time_it == 1:
                     stats[f"Time/{self.name} - Backward Pass"] = to_min(back_time)
                 stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
         else:
