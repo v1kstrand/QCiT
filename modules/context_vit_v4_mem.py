@@ -110,6 +110,36 @@ class Mlp(nn.Module):
         return x
 
 
+class CLSControlledFusion(nn.Module):
+    def __init__(
+        self, dim, query_bank, norm_bank, hidden_mult=4, norm_layer=nn.LayerNorm
+    ):
+        super().__init__()
+        self.dim = dim
+        hidden_dim = hidden_mult * dim
+        self.weight_proj = nn.Sequential(
+            norm_layer(dim),  # pre-norm
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 3),  # logits for 3 memory sources
+        )
+        self.query_bank = query_bank
+        self.norm_bank = norm_bank
+        self.norm_ctx_mem = norm_layer(dim)
+        self.norm_bank_mem = norm_layer(dim)
+        self.out_norm = norm_layer(dim)
+
+    def forward(self, cls_token, ctx_mem, bank_mem, B):
+        q = self.norm_bank(self.query_bank).expand(B, -1, -1)
+        c = self.norm_ctx_mem(ctx_mem)
+        m = self.norm_bank_mem(bank_mem)
+
+        weights = F.softmax(self.weight_proj(cls_token), dim=-1)
+        w = weights.unsqueeze(-1).unsqueeze(-1)  # [B, 3, 1, 1]
+        sources = torch.stack([q, c, m], dim=1)  # [B, 3, M, D]
+        return self.out_norm(F.gelu((w * sources).sum(dim=1)))
+
+
 class ContextAttentionMeM(nn.Module):
     def __init__(
         self,
@@ -120,6 +150,8 @@ class ContextAttentionMeM(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        bank_memory=True,
+        bank_cls_condition=False,
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
@@ -131,17 +163,23 @@ class ContextAttentionMeM(nn.Module):
         self.sdpa = F.scaled_dot_product_attention
 
         self.proj_x = nn.Linear(D, 3 * D, bias=qkv_bias)
+        self.out_x = nn.Linear(D, D, bias=proj_bias)
 
+        if bank_cls_condition:
+            assert bank_memory is True
         self.query_bank = nn.Parameter(torch.zeros(1, bank_size, D))
+        self.bank_cls_condition = bank_cls_condition
+        self.bank_memory = bank_memory
         self.bank_norm = norm_layer(D)
+        if bank_cls_condition:
+            self.bank_fusion = CLSControlledFusion(D, self.query_bank, self.bank_norm)
 
         self.ctx_norm = norm_layer(D)
-        self.proj_ctx = nn.Linear(D, 3 * D, bias=qkv_bias)
+        t = 3 if bank_memory else 2
+        self.proj_ctx = nn.Linear(D, t * D, bias=qkv_bias)
 
         self.attn_drop_v = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
-
-        self.out_x = nn.Linear(D, D, bias=proj_bias)
 
         with torch.no_grad():
             torch.nn.init.trunc_normal_(self.query_bank, std=0.02)
@@ -156,7 +194,7 @@ class ContextAttentionMeM(nn.Module):
             return self.query_bank.expand(B, -1, -1)
         return self.bank_norm(self.query_bank + mem)
 
-    def _forward(self, x, mem=None) -> Tensor:
+    def __forward(self, x, mem=None) -> Tensor:
         (B, N, _), M = x.size(), self.M
 
         with torch.profiler.record_function("Proj: x -> QKV"):
@@ -181,28 +219,35 @@ class ContextAttentionMeM(nn.Module):
             x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
 
         return x_out, mem_out
-    
-    def _get_bank_query(self, B, ctx_mem=None, bank_mem=None):
-        if ctx_mem is None or ctx_mem is True: # block 0
-            return self.query_bank.expand(B, -1, -1)
-        return self.bank_norm(self.query_bank + ctx_mem + bank_mem)
-    
-    def __forward(self, x, ctx_mem=None, bank_mem=None) -> Tensor:
+
+    def _forward(self, x, mem) -> Tensor:
         (B, N, _), M = x.size(), self.M
+        ctx_mem, bank_mem = mem
+        bank_out = ctx_out = None
 
         with torch.profiler.record_function("Proj: x -> QKV"):
             x_proj = torch.chunk(self.proj_x(x), 3, dim=-1)
             xQ, xK, xV = [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_proj]
 
         with torch.profiler.record_function("Get Bank Query"):
-            bankQ = bank_mem = self.get_bank_query(B, ctx_mem, bank_mem) # [B, M, D]
+            if not self.bank_memory or ctx_mem is True:
+                bankQ = self.bank_norm(self.query_bank.expand(B, -1, -1))
+                if self.bank_cls_condition:
+                    bank_out = bankQ
+            elif not self.bank_cls_condition:
+                bankQ = self.bank_norm(self.query_bank + ctx_mem)  # [B, M, D]
+            else:
+                bankQ = bank_out = self.bank_fusion(x[:, 0, :], ctx_mem, bank_mem, B)
             bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, D]
 
         with torch.profiler.record_function("Ca: X <- Bank"):
             ctx = self.sdpa_w_reshape(bankQ, xK, xV)  # [B, M, D] O(NMD)
 
         with torch.profiler.record_function("Proj: ctx -> KV & Mem"):
-            *ctx_kv, ctx_out = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), 3, dim=-1)
+            chunk = 3 if self.bank_memory else 2
+            ctx_kv = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), chunk, dim=-1)
+            if self.bank_memory:
+                *ctx_kv, ctx_out = ctx_kv
             ctxK, ctxV = [y.view(B, M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
 
         with torch.profiler.record_function("Ca: X <- ctx"):
@@ -211,7 +256,7 @@ class ContextAttentionMeM(nn.Module):
         with torch.profiler.record_function("Proj: X -> out"):
             x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
 
-        return x_out, ctx_out, bank_mem
+        return x_out, (ctx_out, bank_out)
 
     def forward(self, x: Tensor, mem=None, threshold=None) -> Tensor:
         if threshold is None:
@@ -275,6 +320,8 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
+        bank_memory=True,
+        bank_cls_condition=False,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -288,6 +335,8 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
+            bank_memory=bank_memory,
+            bank_cls_condition=bank_cls_condition,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -502,7 +551,8 @@ class ContextViTv4MeM(nn.Module):
         bank_size=64,
         flash_mlp=False,
         return_cls_only=True,
-        use_query_memory=True,
+        bank_memory=True,
+        bank_cls_condition=False,
         sdp_threshold=None,
     ):
         """
@@ -532,7 +582,7 @@ class ContextViTv4MeM(nn.Module):
         self.p_token_drop = token_drop
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
-        self.use_query_memory = use_query_memory
+        self.bank_memory = bank_memory
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -566,6 +616,8 @@ class ContextViTv4MeM(nn.Module):
                 bank_size=bank_size,
                 layerscale=layerscale,
                 flash_mlp=flash_mlp,
+                bank_memory=bank_memory,
+                bank_cls_condition=bank_cls_condition,
                 sdp_threshold=sdp_threshold,
             )
             for i in range(depth)
@@ -605,7 +657,7 @@ class ContextViTv4MeM(nn.Module):
 
     def forward(self, x):
         x = self.prepare_tokens(x)
-        mem = True if self.use_query_memory else None
+        mem = (True, True) if self.bank_memory else (None, None)
         for blk in self.blocks:
             x, mem = blk(x, mem)
         with torch.profiler.record_function("Final Norm"):
