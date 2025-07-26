@@ -8,6 +8,7 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+from math import inf
 
 
 import torch
@@ -553,7 +554,7 @@ class ContextViTv4MeM(nn.Module):
         return_cls_only=True,
         bank_memory=True,
         bank_cls_condition=False,
-        sdp_threshold=None,
+        sdp_threshold=inf,
     ):
         """
         Args:
