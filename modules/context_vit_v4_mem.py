@@ -171,7 +171,7 @@ class ContextAttentionMeM(nn.Module):
 
     def get_bank_query(self, B, mem=None):
         if mem is None or mem is True:            
-            return self.query_bank.repeat(B, -1, -1).view(B, self.M, self.n_h, -1).transpose(1, 2)
+            return self.query_bank.repeat(B, 1, 1).view(B, self.M, self.n_h, -1).transpose(1, 2)
         query_bank = self.query_bank + mem * self.mem_scale
         return self.proj(self.bank_norm(query_bank), self.bank_to_q, self.split_bank)[0]  # [B, H, M, D]
 
