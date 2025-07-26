@@ -181,6 +181,37 @@ class ContextAttentionMeM(nn.Module):
             x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
 
         return x_out, mem_out
+    
+    def _get_bank_query(self, B, ctx_mem=None, bank_mem=None):
+        if ctx_mem is None or ctx_mem is True: # block 0
+            return self.query_bank.expand(B, -1, -1)
+        return self.bank_norm(self.query_bank + ctx_mem + bank_mem)
+    
+    def __forward(self, x, ctx_mem=None, bank_mem=None) -> Tensor:
+        (B, N, _), M = x.size(), self.M
+
+        with torch.profiler.record_function("Proj: x -> QKV"):
+            x_proj = torch.chunk(self.proj_x(x), 3, dim=-1)
+            xQ, xK, xV = [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_proj]
+
+        with torch.profiler.record_function("Get Bank Query"):
+            bankQ = bank_mem = self.get_bank_query(B, ctx_mem, bank_mem) # [B, M, D]
+            bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, D]
+
+        with torch.profiler.record_function("Ca: X <- Bank"):
+            ctx = self.sdpa_w_reshape(bankQ, xK, xV)  # [B, M, D] O(NMD)
+
+        with torch.profiler.record_function("Proj: ctx -> KV & Mem"):
+            *ctx_kv, ctx_out = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), 3, dim=-1)
+            ctxK, ctxV = [y.view(B, M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
+
+        with torch.profiler.record_function("Ca: X <- ctx"):
+            x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV)  # [B, N, D] O(NMD)
+
+        with torch.profiler.record_function("Proj: X -> out"):
+            x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
+
+        return x_out, ctx_out, bank_mem
 
     def forward(self, x: Tensor, mem=None, threshold=None) -> Tensor:
         if threshold is None:
@@ -500,7 +531,6 @@ class ContextViTv4MeM(nn.Module):
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
-        self.bank_size = bank_size
         self.return_cls_only = return_cls_only
         self.use_query_memory = use_query_memory
 
@@ -533,6 +563,7 @@ class ContextViTv4MeM(nn.Module):
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
+                bank_size=bank_size,
                 layerscale=layerscale,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,

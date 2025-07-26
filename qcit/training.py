@@ -45,11 +45,11 @@ def train_loop(modules, exp):
         # -- Epoch Start --
         curr_epoch = opt_sched.curr_step // args.steps_p_epoch
         next_epoch = opt_sched.curr_step + len(train_loader)
-        epoch_time = time.perf_counter()
         batch_time = stats_time = None
+        start_step, epoch_time = opt_sched.curr_step, time.perf_counter()
 
         models.train()
-        for step, data in enumerate(train_loader, start=opt_sched.curr_step):
+        for step, data in enumerate(train_loader, start=start_step):
             print(f"Epoch: {curr_epoch} - Step: {step} | Next Stats @ {next_stats} - Next Epoch @ {next_epoch} [{get_time()}]")
             if batch_time is not None:
                 exp.log_metric("General/Batch time", to_min(batch_time), step=step)
@@ -62,7 +62,7 @@ def train_loop(modules, exp):
                 if args.kw["mixup_p"] >= random.random():
                     mixup = True
                     imgs, labels = mixup_fn(imgs, labels)
-                time_it = step % args.freq["time_it"] if step > 0 else None
+                time_it = step % args.freq["time_it"] if step > start_step + 10 else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
 
