@@ -119,26 +119,23 @@ class CLSControlledFusion(nn.Module):
         self.dim = dim
         hidden_dim = hidden_mult * dim
         self.weight_proj = nn.Sequential(
-            norm_layer(dim),  # pre-norm
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, 3),  # logits for 3 memory sources
+            nn.Linear(hidden_dim, 3),
         )
         self.query_bank = query_bank
         self.norm_bank = norm_bank
-        self.norm_ctx_mem = norm_layer(dim)
-        self.norm_bank_mem = norm_layer(dim)
         self.out_norm = norm_layer(dim)
 
     def forward(self, cls_token, ctx_mem, bank_mem, B):
-        q = self.norm_bank(self.query_bank).expand(B, -1, -1)
-        c = self.norm_ctx_mem(ctx_mem)
-        m = self.norm_bank_mem(bank_mem)
+        q = self.query_bank.expand(B, -1, -1)
+        c = ctx_mem
+        m = bank_mem
 
         weights = F.softmax(self.weight_proj(cls_token), dim=-1)
         w = weights.unsqueeze(-1).unsqueeze(-1)  # [B, 3, 1, 1]
         sources = torch.stack([q, c, m], dim=1)  # [B, 3, M, D]
-        return self.out_norm(F.gelu((w * sources).sum(dim=1)))
+        return self.out_norm((w * sources).sum(dim=1))
 
 
 class ContextAttentionMeM(nn.Module):
