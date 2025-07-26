@@ -84,7 +84,7 @@ def load_model(args):
     optimizers = {}
     scalers = {}
 
-    for name, kw in args.models.items():
+    for i, name, kw in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
         params = init_model(m, args)
         optimizers[name] = opt = torch.optim.AdamW([*params.values()], fused=True)
@@ -92,6 +92,12 @@ def load_model(args):
         m.backward = PushGrad(opt, scaler, args)
         if hasattr(m.inner.model, "init"):
             m.inner.model.init()
+            
+        # TODO
+        """
+        opt = torch.optim.AdamW([*params.values()], fused=True)
+        optimizers[name] = OptScheduler(optimizers, args, args.exp if i == 0 else None)
+        """
 
     opt_scheduler = OptScheduler(optimizers, args, args.exp)
     if args.checkpoint_path:

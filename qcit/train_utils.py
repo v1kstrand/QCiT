@@ -3,47 +3,6 @@ import math
 import torch
 from torch import nn
 
-
-@torch.no_grad()
-def init_weights(m):
-    if isinstance(m, nn.Linear):
-        nn.init.trunc_normal_(m.weight, std=0.02)
-        if isinstance(m, nn.Linear) and m.bias is not None:
-            nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.LayerNorm):
-        nn.init.constant_(m.bias, 0)
-        nn.init.constant_(m.weight, 1.0)
-
-
-def get_mlp(layer_str):
-    layer_dims, drop_out, norm, _ = layer_str.split(":")
-    layer_dims = list(map(int, layer_dims.split("-")))
-    input_dim = layer_dims[0]
-    output_dim = layer_dims[-1]
-    hidden_dims = layer_dims[1:-1]
-    drop_out = float(drop_out)
-
-    layers = []
-    in_dim = input_dim
-    for h_dim in hidden_dims:
-        layers.append(nn.Linear(in_dim, h_dim, bias=False))
-
-        if norm != "0":
-            assert norm in ("1", "2")
-            curr_norm = nn.LayerNorm if norm == "1" else nn.BatchNorm1d
-            layers.append(curr_norm(h_dim))
-        layers.append(nn.GELU())
-
-        if drop_out > 0:
-            layers.append(nn.Dropout(drop_out))
-        in_dim = h_dim
-
-    if output_dim > 0:
-        layers.append(nn.Linear(in_dim, output_dim))
-    mlp = nn.Sequential(*layers)
-    mlp.apply(init_weights)
-    return mlp
-
 def init_model(model, args):
     regularized, not_regularized, reg_id = [], [], set()
     for n, param in model.named_parameters():
@@ -100,6 +59,104 @@ def init_model(model, args):
             params[group]["params"].append(p)
 
     return params
+
+
+class OptSchedulerV2(nn.Module):
+    def __init__(self, optimizer, args, exp=None, batch_to_step=True):
+        super().__init__()
+        self.optimizer = optimizer
+        factor = args.steps_p_epoch if batch_to_step else 1
+        self.wu_steps = args.opt["steps_wu"] * factor
+        self.wu_start = args.opt["lr_init"]
+        self.dec_steps = args.opt["steps_dec"] * factor
+        self.lr_end = args.opt["lr_final"]
+        self.wd_start = args.opt["wd_init"]
+        self.wd_end = args.opt["wd_final"]
+        self.curr_step = 1
+        self.exp = exp
+        print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
+
+    def forward(self, step: int = None):
+        """
+        Call at each training step to update LRs.
+        If `step` is provided, uses that instead of internal counter.
+        """
+        step = step if step is not None else self.curr_step
+        if step <= self.wu_steps:
+            lr_curr = self._set_warm_up(step)
+            wd_curr = self.wd_start
+        else:
+            lr_curr = self._set_lr_cosine(step)
+            wd_curr = self._set_wd_cosine(step)
+        self.curr_step += 1
+
+        if self.exp is not None:
+            self.exp.log_metric("General/LR", lr_curr, step=step)
+            self.exp.log_metric("General/WD", wd_curr, step=step)
+
+    def _set_warm_up(self, step: int):
+        """Linearly ramp LR from wu_start → lr_max over wu_steps."""
+        curr = 0
+        alpha = step / float(self.wu_steps)
+        for pg in self.optimizer.param_groups:
+            lr_max = pg.get("lr_max")
+            assert lr_max is not None, "param group missing `lr_max`"
+            pg["lr"] = self.wu_start + alpha * (lr_max - self.wu_start)
+            curr = max(curr, pg["lr"])
+        return curr
+
+    def _set_lr_cosine(self, step: int):
+        """Cosine-decay LR from lr_max → lr_end over dec_steps."""
+        curr = 0
+        dec_step = step - self.wu_steps
+        if dec_step >= self.dec_steps:
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = self.lr_end
+            return self.lr_end
+
+        cos_factor = 0.5 * (1 + math.cos(math.pi * dec_step / float(self.dec_steps)))
+        for pg in self.optimizer.param_groups:
+            lr_max = pg.get("lr_max")
+            assert lr_max is not None, "param group missing `lr_max`"
+            pg["lr"] = self.lr_end + (lr_max - self.lr_end) * cos_factor
+            curr = max(curr, pg["lr"])
+        return curr
+
+    def _set_wd_cosine(self, step: int):
+        """Cosine-decay LR from lr_max → lr_end over dec_steps."""
+        dec_step = step - self.wu_steps
+        if dec_step >= self.dec_steps:
+            for pg in self.optimizer.param_groups:
+                if pg["weight_decay"] != 0:
+                    pg["weight_decay"] = self.wd_end
+            return self.wd_end
+
+        cos_factor = 0.5 * (1 + math.cos(math.pi * dec_step / float(self.dec_steps)))
+        new_wd = self.wd_end + (self.wd_start - self.wd_end) * cos_factor
+        for pg in self.optimizer.param_groups:
+            if pg["weight_decay"] == 0:
+                continue
+            pg["weight_decay"] = new_wd
+        return new_wd
+
+    def state_dict(self):
+        return {
+            "optimizer": self.optimizer.state_dict(),
+            "wu_steps": self.wu_steps,
+            "wu_start": self.wu_start,
+            "dec_steps": self.dec_steps,
+            "lr_end": self.lr_end,
+            "curr_step": self.curr_step,
+            "wd_start": self.wd_start,
+            "wd_end": self.wd_end,
+        }
+
+    def load_state_dict(self, sd):
+        for k, v in sd.items():
+            if k != "optimizer":
+                setattr(self, k, v)
+            else:
+                self.optimizer.load_state_dict(v)
 
 class OptScheduler(nn.Module):
     def __init__(self, optimizers, args, exp=None, batch_to_step=True):
@@ -211,7 +268,7 @@ def save_model(modules, name):
             "model": {n: m.state_dict() for n, m in model.items()},
             "optimizer": {n: o.state_dict() for n, o in optimizer.items()},
             "scaler": {n: s.state_dict() for n, s in scaler.items()},
-            "opt_scheduler": opt_sched.state_dict(),
+            "opt_scheduler": opt_sched.state_dict(), # TODO
         },
         save_path,
     )

@@ -12,6 +12,8 @@ from .train_prep import prep_training
 from .utils import to_min, get_time
 
 
+
+
 @torch.no_grad()
 def validate(model, loader, name, curr_step, args, exp):
     model.eval()
@@ -53,6 +55,7 @@ def train_loop(modules, exp):
                 exp.log_metric("General/Batch time", to_min(batch_time), step=step)
 
             opt_sched()
+            # _ = [o.step() for o in opt.values()] TODO
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 mixup = False
@@ -71,6 +74,7 @@ def train_loop(modules, exp):
                 if stats_time is not None:       
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
                 opt_sched()
+                # _ = [o.step() for o in opt.values()] TODO
                 save_model(modules, "model")
                 del stats
 
