@@ -114,96 +114,81 @@ class ContextAttentionMeM(nn.Module):
     def __init__(
         self,
         dim: int,
-        qk_head_dim: int,
         bank_size: int,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        norm_layer = nn.LayerNorm,
+        norm_layer=nn.LayerNorm,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.D = D =  dim
-        self.d = d = qk_head_dim * num_heads
+        self.D = D = dim
         self.n_h = num_heads
         self.h_D = dim // num_heads
-        self.h_d = qk_head_dim
         self.M = bank_size
         self.sdpa = F.scaled_dot_product_attention
-        
-        # Compressor Bank
-        self.query_bank = nn.Parameter(torch.zeros(1, bank_size, d))
-        self.bank_norm = norm_layer(d)
-        self.mem_scale = nn.Parameter(torch.ones(d))
 
-        # — Proj —
-        self.x_to_qkv = nn.Linear(D, 2 * d + D, bias=qkv_bias)
-        self.bank_to_q = nn.Linear(d, d, bias=qkv_bias)
-        self.ctx_to_kv = nn.Linear(D, d + D, bias=qkv_bias)
-        
-        self.split_x = (d, d, D)
-        self.split_bank = d
-        self.split_ctx = (d, D)
-        
-        # — Dropout —
+        self.proj_x = nn.Linear(D, 3 * D, bias=qkv_bias)
+
+        self.query_bank = nn.Parameter(torch.zeros(1, bank_size, D))
+        self.bank_norm = norm_layer(D)
+
+        self.ctx_norm = norm_layer(D)
+        self.proj_ctx = nn.Linear(D, 3 * D, bias=qkv_bias)
+
         self.attn_drop_v = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
 
-        # — Out proj —
         self.out_x = nn.Linear(D, D, bias=proj_bias)
-        self.out_mem = nn.Linear(D, d, bias=proj_bias)
-        
+
         with torch.no_grad():
             torch.nn.init.trunc_normal_(self.query_bank, std=0.02)
-            torch.nn.init.trunc_normal_(self.mem_scale, std=1e-4)
 
-    def sdpa_w_reshape(self, q, k, v):          
+    def sdpa_w_reshape(self, q, k, v):
         B, _, N, _ = q.size()
         attn = self.sdpa(q, k, v, dropout_p=self.attn_drop_v)
         return attn.transpose(1, 2).reshape(B, N, -1)
 
-    def proj(self, x, W, split_dims):
-        B, N, _ = x.size()
-        x_split = torch.split(W(x), split_dims, dim=-1)
-        return [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_split]
-
     def get_bank_query(self, B, mem=None):
-        if mem is None or mem is True:            
-            return self.query_bank.expand(B, -1, -1).view(B, self.M, self.n_h, -1).transpose(1, 2)
-        query_bank = self.query_bank + mem * self.mem_scale
-        return self.proj(self.bank_norm(query_bank), self.bank_to_q, self.split_bank)[0]  # [B, H, M, D]
+        if mem is None or mem is True:
+            return self.query_bank.expand(B, -1, -1)
+        return self.bank_norm(self.query_bank + mem)
 
     def _forward(self, x, mem=None) -> Tensor:
-        with torch.profiler.record_function("Get Query"):
-            bankQ = self.get_bank_query(x.size(0), mem)  # [B, H, M, d] O(Md^2 + Md)
+        (B, N, _), M = x.size(), self.M
 
-        with torch.profiler.record_function("Proj QKV: X"):
-            xQ, xK, xV = self.proj(x, self.x_to_qkv, self.split_x) # [B, H, M, d/D] O(N(2dD + D^2))
+        with torch.profiler.record_function("Proj: x -> QKV"):
+            x_proj = torch.chunk(self.proj_x(x), 3, dim=-1)
+            xQ, xK, xV = [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_proj]
+
+        with torch.profiler.record_function("Get Bank Query"):
+            bankQ = self.get_bank_query(B, mem)
+            bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, d]
 
         with torch.profiler.record_function("Ca: X <- Bank"):
-            ctx = self.sdpa_w_reshape(bankQ, xK, xV) # [B, M, d] O(NMd)
+            ctx = self.sdpa_w_reshape(bankQ, xK, xV)  # [B, M, d] O(NMD)
 
-        with torch.profiler.record_function("proj KV: ctx"):
-            ctxK, ctxV = self.proj(ctx, self.ctx_to_kv, self.split_ctx) # [B, M, d/D] O(M(dD + D^2))
+        with torch.profiler.record_function("Proj: ctx -> KV & Mem"):
+            *ctx_kv, mem_out = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), 3, dim=-1)
+            ctxK, ctxV = [y.view(B, M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
 
         with torch.profiler.record_function("Ca: X <- ctx"):
-            x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV) # [B, N, D] O(NMd)
+            x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV)  # [B, N, D] O(NMD)
 
-        with torch.profiler.record_function("Proj Out: X, MEM"):
-            x_out = self.out_drop(self.out_x(x_attn)) # [B, N, D] O(ND^2)
-            mem_out = self.out_drop(self.out_mem(ctx)) if mem is not None else None # [B, N, d] O(MDd)
+        with torch.profiler.record_function("Proj: X -> out"):
+            x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
 
         return x_out, mem_out
 
     def forward(self, x: Tensor, mem=None, threshold=None) -> Tensor:
         if threshold is None:
             print(
-                "Warning: threshold is set to None, using default forward method"
+                "Warning: SDP kernel threshold is set to None, using default forward method"
             )
             return self._forward(x, mem)
-        
+
         if x.size(1) > threshold:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
         else:
@@ -247,7 +232,6 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
-        qk_head_dim,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -260,7 +244,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        sdp_threshold = None
+        sdp_threshold=None,
     ) -> None:
         super().__init__()
         self.sdp_threshold = sdp_threshold
@@ -272,8 +256,7 @@ class Block(nn.Module):
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
-            qk_head_dim=qk_head_dim,
-            bank_size=bank_size
+            bank_size=bank_size,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -488,9 +471,8 @@ class ContextViTv4MeM(nn.Module):
         bank_size=64,
         flash_mlp=False,
         return_cls_only=True,
-        use_query_memory=False,
-        qk_head_dim=64,
-        sdp_threshold=None
+        use_query_memory=True,
+        sdp_threshold=None,
     ):
         """
         Args:
@@ -553,8 +535,7 @@ class ContextViTv4MeM(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 flash_mlp=flash_mlp,
-                qk_head_dim=qk_head_dim,
-                sdp_threshold=sdp_threshold
+                sdp_threshold=sdp_threshold,
             )
             for i in range(depth)
         ]
@@ -599,7 +580,6 @@ class ContextViTv4MeM(nn.Module):
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
         return out[:, 0, :] if self.return_cls_only else out
-
 
 
 # # END
