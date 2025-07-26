@@ -112,7 +112,7 @@ def get_encoder(module, args, kw):
     for k, v in kw.get("unique", {}).items():
         assert k in inspect.signature(module).parameters, f"{k} not found in {kw['name']}"
         print(f"INFO: Assigning ({k} : {v}) to {kw['name']}")
-    
+    print()
     return module(
             patch_size=args.vkw["patch_size"],
             img_size=args.kw["img_size"],
