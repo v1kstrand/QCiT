@@ -44,7 +44,7 @@ class OuterModel(nn.Module):
     def __init__(self, args, name, kw):
         super().__init__()
         self.args = args
-        self.name = name
+        self.name = kw["name"] = name
         self.kw = kw
         self.inner = InnerModel(args, kw)
         self.last_top1 = self.backward = None
@@ -110,8 +110,8 @@ class PushGrad(nn.Module):
 
 def get_encoder(module, args, kw):
     for k, v in kw.get("unique", {}).items():
-        assert k in inspect.signature(module).parameters, f"{k} not found in"
-        print(f"INFO: Assigning ({k} : {v}) to {module.__name__}")
+        assert k in inspect.signature(module).parameters, f"{k} not found in {kw['name']}"
+        print(f"INFO: Assigning ({k} : {v}) to {kw['name']}")
     
     return module(
             patch_size=args.vkw["patch_size"],
