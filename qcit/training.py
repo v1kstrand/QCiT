@@ -37,10 +37,11 @@ def validate(model, loader, name, curr_step, args, exp):
         exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=curr_step)
 
 def train_loop(modules, exp):
-    models, _, _, opt_sched, train_loader, val_loader, mixup_fn, args = modules
-    stats = {name: defaultdict(list) for name in models}
+    models, opt, _,  train_loader, val_loader, mixup_fn, args = modules
+    opt_sched = opt[list(opt.keys())[0]]
     next_stats, init_run = opt_sched.curr_step + args.freq["stats"], True
 
+    stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
         # -- Epoch Start --
         curr_epoch = opt_sched.curr_step // args.steps_p_epoch
@@ -54,13 +55,11 @@ def train_loop(modules, exp):
             if batch_time is not None:
                 exp.log_metric("General/Batch time", to_min(batch_time), step=step)
 
-            opt_sched()
-            # _ = [o.step() for o in opt.values()] TODO
+            #opt_sched()
+            _ = [o.step() for o in opt.values()] 
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
-                mixup = False
-                if args.kw["mixup_p"] >= random.random():
-                    mixup = True
+                if mixup := args.kw["mixup_p"] >= random.random():
                     imgs, labels = mixup_fn(imgs, labels)
                 time_it = step % args.freq["time_it"] if step > start_step + 10 else None
                 for name, model in models.items():
@@ -74,8 +73,9 @@ def train_loop(modules, exp):
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:       
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
-                opt_sched()
-                # _ = [o.step() for o in opt.values()] TODO
+                
+                #opt_sched()
+                _ = [o.step() for o in opt.values()] 
                 save_model(modules, "model")
                 del stats
 

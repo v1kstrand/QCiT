@@ -87,19 +87,16 @@ def load_model(args):
     for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
         params = init_model(m, args)
-        optimizers[name] = opt = torch.optim.AdamW([*params.values()], fused=True)
+        
+        opt = torch.optim.AdamW([*params.values()], fused=True)
+        optimizers[name] = OptScheduler(optimizers, args, args.exp if i == 0 else None)
+        
         scalers[name] = scaler = torch.amp.GradScaler("cuda")
         m.backward = PushGrad(opt, scaler, args)
         if hasattr(m.inner.model, "init"):
             m.inner.model.init()
-            
-        # TODO
-        """
-        opt = torch.optim.AdamW([*params.values()], fused=True)
-        optimizers[name] = OptScheduler(optimizers, args, args.exp if i == 0 else None)
-        """
 
-    opt_scheduler = OptScheduler(optimizers, args, args.exp)
+    #opt_scheduler = OptScheduler(optimizers, args, args.exp)
     if args.checkpoint_path:
         print("INFO: Loading from provided checkpoint")
 
@@ -114,11 +111,13 @@ def load_model(args):
         except:
             assert checkpoint_path == args.exp_dir / "model.pth", "Loading failed"
             checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
-        for n in models:
+        for n in checkpoint["model"]:
             models[n].load_state_dict(checkpoint["model"][n])
-            models[n].backward.optimizer.load_state_dict(checkpoint["optimizer"][n])
+            optimizers[name].load_state_dict(checkpoint["optimizer"][n])
+            models[n].backward.optimizer = optimizers[name].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
-        opt_scheduler.load_state_dict(checkpoint["opt_scheduler"])
+        
+        #opt_scheduler.load_state_dict(checkpoint["opt_scheduler"])
     else:
         print("INFO: Initializing new model")
     args.exp_init = False
@@ -133,7 +132,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return models, optimizers, scalers, opt_scheduler
+    return models, optimizers, scalers #, opt_scheduler
 
 
 def prep_training(dict_args, exp):
@@ -187,5 +186,5 @@ def prep_training(dict_args, exp):
         torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     train_loader, val_loader, mixup_fn = load_data(args)
-    models, opts, scalers, opt_sched = load_model(args)
-    return models, opts, scalers, opt_sched, train_loader, val_loader, mixup_fn,  args
+    models, opts, scalers = load_model(args)
+    return models, opts, scalers, train_loader, val_loader, mixup_fn, args

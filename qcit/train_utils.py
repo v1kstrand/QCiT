@@ -61,7 +61,7 @@ def init_model(model, args):
     return params
 
 
-class OptSchedulerV2(nn.Module):
+class OptScheduler(nn.Module):
     def __init__(self, optimizer, args, exp=None, batch_to_step=True):
         super().__init__()
         self.optimizer = optimizer
@@ -146,9 +146,9 @@ class OptSchedulerV2(nn.Module):
             "wu_start": self.wu_start,
             "dec_steps": self.dec_steps,
             "lr_end": self.lr_end,
-            "curr_step": self.curr_step,
             "wd_start": self.wd_start,
             "wd_end": self.wd_end,
+            "curr_step": self.curr_step,
         }
 
     def load_state_dict(self, sd):
@@ -158,7 +158,7 @@ class OptSchedulerV2(nn.Module):
             else:
                 self.optimizer.load_state_dict(v)
 
-class OptScheduler(nn.Module):
+class OptSchedulerV1(nn.Module):
     def __init__(self, optimizers, args, exp=None, batch_to_step=True):
         super().__init__()
         self.optimizers = optimizers
@@ -258,7 +258,7 @@ class OptScheduler(nn.Module):
 
 
 def save_model(modules, name):
-    model, optimizer, scaler, opt_sched, *_, args = modules
+    model, optimizer, scaler, *_, args = modules
     save_path = args.exp_dir / (name + ".pth")
     if save_path.exists():
         shutil.copy(save_path, args.exp_dir / (name + "_prev.pth"))
@@ -268,7 +268,7 @@ def save_model(modules, name):
             "model": {n: m.state_dict() for n, m in model.items()},
             "optimizer": {n: o.state_dict() for n, o in optimizer.items()},
             "scaler": {n: s.state_dict() for n, s in scaler.items()},
-            "opt_scheduler": opt_sched.state_dict(), # TODO
+            #"opt_scheduler": opt_sched.state_dict(), # TODO
         },
         save_path,
     )
