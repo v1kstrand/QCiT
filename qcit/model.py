@@ -6,9 +6,7 @@ import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.qcit import QCiT
-from modules.context_vit_v4 import ContextViTv4
-from modules.context_vit_v4_moe import ContextViTv4MoE
-from modules.context_vit_v4_mem import ContextViTv4MeM
+from modules.context_vit_v5 import ContextAttentionV5
 from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -17,10 +15,7 @@ from .utils import to_min
 
 def get_arc(arc):
     return {"vit" : ViT,
-            "citv4" : ContextViTv4,
-            "citv4_moe" : ContextViTv4MoE,
-            "citv4_mem" : ContextViTv4MeM,
-            "qcit": QCiT,}[arc]
+            "citv5" : ContextAttentionV5,}[arc]
             
 
 class InnerModel(nn.Module):

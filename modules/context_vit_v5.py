@@ -110,22 +110,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
-class WeightedFusion(nn.Module):
-    def __init__(self, query_bank, out_norm):
-        super().__init__()
-        self.weights = nn.Parameter(torch.tensor([1.0, 0.0, 0.0]))
-        self.query_bank = query_bank
-        self.out_norm = out_norm
-
-    def forward(self, ctx_mem, bank_mem, B):
-        bank = self.query_bank.expand(B, -1, -1)
-        w1, w2, w3 = torch.unbind(F.softmax(self.weights, -1))
-        fused = w1 * bank + w2 * ctx_mem + w3 * bank_mem
-        return self.out_norm(fused)
-
-
-class ContextAttentionMeM(nn.Module):
+class ContextAttentionV5(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -135,94 +120,52 @@ class ContextAttentionMeM(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        bank_memory=True,
-        bank_cls_condition=False,
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.D = D = dim
+        self.dim = dim
         self.n_h = num_heads
-        self.h_D = dim // num_heads
-        self.M = bank_size
+        self.h_d = dim // num_heads
+        self.bank_size = bank_size
         self.sdpa = F.scaled_dot_product_attention
 
-        self.proj_x = nn.Linear(D, 3 * D, bias=qkv_bias)
-        self.out_x = nn.Linear(D, D, bias=proj_bias)
+        self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
+        self.out_x = nn.Linear(dim, dim, bias=proj_bias)
 
-        if bank_cls_condition:
-            assert bank_memory is True
-        self.query_bank = nn.Parameter(torch.zeros(1, bank_size, D))
-        self.bank_cls_condition = bank_cls_condition
-        self.bank_memory = bank_memory
-        self.bank_norm = norm_layer(D)
-        if bank_cls_condition:
-            self.bank_fusion = WeightedFusion(self.query_bank, self.bank_norm)
-
-        self.ctx_norm = norm_layer(D)
-        t = 3 if bank_memory else 2
-        self.proj_ctx = nn.Linear(D, t * D, bias=qkv_bias)
+        self.norm_ctx = norm_layer(dim)
+        self.proj_ctx = nn.Linear(dim, 3 * dim, bias=qkv_bias)
 
         self.attn_drop_v = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
-
-        with torch.no_grad():
-            torch.nn.init.trunc_normal_(self.query_bank, std=0.02)
 
     def sdpa_w_reshape(self, q, k, v):
         B, _, N, _ = q.size()
         attn = self.sdpa(q, k, v, dropout_p=self.attn_drop_v)
         return attn.transpose(1, 2).reshape(B, N, -1)
 
-    def get_bank_query(self, B, mem=None):
-        if mem is None or mem is True:
-            return self.query_bank.expand(B, -1, -1)
-        return self.bank_norm(self.query_bank + mem)
-
-    def _forward(self, x, mem) -> Tensor:
-        B, N, _= x.size()
-        ctx_mem, bank_mem = mem
-        bank_out = ctx_out = None
-
-        with torch.profiler.record_function("Proj: x -> QKV"):
-            x_proj = torch.chunk(self.proj_x(x), 3, dim=-1)
-            xQ, xK, xV = [y.view(B, N, self.n_h, -1).transpose(1, 2) for y in x_proj]
-
-        with torch.profiler.record_function("Get Bank Query"):
-            if not self.bank_memory or ctx_mem is True:
-                bankQ = self.bank_norm(self.query_bank.expand(B, -1, -1))
-                if self.bank_cls_condition:
-                    bank_out = bankQ
-            elif not self.bank_cls_condition:
-                bankQ = self.bank_norm(self.query_bank + ctx_mem)  # [B, M, D]
-            else:
-                bankQ = bank_out = self.bank_fusion(ctx_mem, bank_mem, B)
-            bankQ = bankQ.view(B, self.M, self.n_h, -1).transpose(1, 2)  # [B, H, M, D]
-
-        with torch.profiler.record_function("Ca: X <- Bank"):
-            ctx = self.sdpa_w_reshape(bankQ, xK, xV)  # [B, M, D] O(NMD)
-
-        with torch.profiler.record_function("Proj: ctx -> KV & Mem"):
-            chunk = 3 if self.bank_memory else 2
-            ctx_kv = torch.chunk(self.proj_ctx(self.ctx_norm(ctx)), chunk, dim=-1)
-            if self.bank_memory:
-                *ctx_kv, ctx_out = ctx_kv
-            ctxK, ctxV = [y.view(B, self.M, self.n_h, -1).transpose(1, 2) for y in ctx_kv]
-
-        with torch.profiler.record_function("Ca: X <- ctx"):
-            x_attn = self.sdpa_w_reshape(xQ, ctxK, ctxV)  # [B, N, D] O(NMD)
-
-        with torch.profiler.record_function("Proj: X -> out"):
-            x_out = self.out_drop(self.out_x(x_attn))  # [B, N, D] O(ND^2)
-
-        return x_out, (ctx_out, bank_out)
-
-    def forward(self, x: Tensor, mem=None, threshold=None) -> Tensor:
+    def _forward(self, x):
+        B, L, _ = x.size()
+        M, N, H, D = self.bank_size, L - self.bank_size, self.n_h, self.h_d
+        
+        q_x, k_x, v_x= self.proj_x(x).reshape(B, L, 3, H, D).permute(2, 0, 3, 1, 4) # 3[B, H, L, D], O(L3D^2) 
+        q_b, q_p = torch.split(q_x, (M, N), 2) # 2[B, H, M/N, D]
+        
+        ctx_attn = self.sdpa_w_reshape(q_b, k_x, v_x)  # [B, M, D] O(NMD+M^2D)
+        ctx = self.proj_ctx(self.norm_ctx(ctx_attn)) # [B, M, 3D] O(M3D^2)
+        kv_ctx, b_out = torch.split(ctx, self.dim * 2, dim=-1) # 2[B, M, 2D/D]# O(M3D^2)
+        k_ctx, v_ctx = kv_ctx.reshape(B, M, 2, H, D).permute(2, 0, 3, 1, 4) # 2[B, M, D]
+        
+        p_attn = self.sdpa_w_reshape(q_p, k_ctx, v_ctx)  # [B, N, D] O(NMD)
+        p_out = self.out_drop(self.out_x(p_attn))  # [B, N, D] O(ND^2)
+        return torch.cat((b_out, p_out), dim= 1) # [B, L, D]
+    
+    def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:
             print(
                 "Warning: SDP kernel threshold is set to None, using default forward method"
             )
-            return self._forward(x, mem)
+            return self._forward(x)
 
         if x.size(1) > threshold:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
@@ -230,7 +173,7 @@ class ContextAttentionMeM(nn.Module):
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
-            return self._forward(x, mem)
+            return self._forward(x)
 
 
 # # Block
@@ -279,8 +222,6 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        bank_memory=True,
-        bank_cls_condition=False,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -294,8 +235,6 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
-            bank_memory=bank_memory,
-            bank_cls_condition=bank_cls_condition,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -317,36 +256,33 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.sample_drop_ratio = drop_path
 
-    def attn_residual_func(self, x: Tensor, mem) -> Tensor:
-        x_out, mem_out = self.attn(self.norm1(x), mem, threshold=self.sdp_threshold)
-        return self.ls1(x_out), mem_out
 
-    def ffn_residual_func(self, x: Tensor) -> Tensor:
-        return self.ls2(self.mlp(self.norm2(x)))
+    def forward(self, x: Tensor) -> Tensor:
+        def attn_residual_func(x: Tensor) -> Tensor:
+            return self.ls1(self.attn(self.norm1(x), threshold=self.sdp_threshold))
 
-    def forward(self, x, mem=None) -> Tensor:
+        def ffn_residual_func(x: Tensor) -> Tensor:
+            return self.ls2(self.mlp(self.norm2(x)))
+
         if self.training and self.sample_drop_ratio > 0.1:
-            assert False, "not implemented yet"
             # the overhead is compensated only for a drop path rate larger than 0.1
             x = drop_add_residual_stochastic_depth(
                 x,
-                residual_func=self.attn_residual_func,
+                residual_func=attn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
             x = drop_add_residual_stochastic_depth(
                 x,
-                residual_func=self.ffn_residual_func,
+                residual_func=ffn_residual_func,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
         elif self.training and self.sample_drop_ratio > 0.0:
-            x_out, mem_out = self.attn_residual_func(x, mem)
-            x = x + self.drop_path1(x_out)
-            x = x + self.drop_path2(self.ffn_residual_func(x))
+            x = x + self.drop_path1(attn_residual_func(x))
+            x = x + self.drop_path2(ffn_residual_func(x))  
         else:
-            x_out, mem_out = self.attn_residual_func(x, mem)
-            x = x + self.ffn_residual_func(x + x_out)
-        return x, mem_out
-
+            x = x + attn_residual_func(x)
+            x = x + ffn_residual_func(x)
+        return x
 
 def drop_add_residual_stochastic_depth(
     x: Tensor,
@@ -371,7 +307,6 @@ def drop_add_residual_stochastic_depth(
         x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor
     )
     return x_plus_residual.view_as(x)
-
 
 # # Patch Embed
 
@@ -510,8 +445,6 @@ class ContextViTv4MeM(nn.Module):
         bank_size=64,
         flash_mlp=False,
         return_cls_only=True,
-        bank_memory=True,
-        bank_cls_condition=False,
         sdp_threshold=inf,
     ):
         """
@@ -533,15 +466,15 @@ class ContextViTv4MeM(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        assert bank_size >= 1, "n_C needs to be 1 or more"
+        assert bank_size >= 1, "bank_size needs to be 1 or more"
         self.num_features = self.embed_dim = embed_dim
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
+        self.bank_size = bank_size
         self.return_cls_only = return_cls_only
-        self.bank_memory = bank_memory
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -551,7 +484,8 @@ class ContextViTv4MeM(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        num_pos_emb = 1 + self.n_registers + self.n_patches
+        self.tok_bank = nn.Parameter(torch.zeros(1, bank_size, embed_dim))
+        num_pos_emb = 1 + self.n_registers + self.n_patches + bank_size
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -575,8 +509,6 @@ class ContextViTv4MeM(nn.Module):
                 bank_size=bank_size,
                 layerscale=layerscale,
                 flash_mlp=flash_mlp,
-                bank_memory=bank_memory,
-                bank_cls_condition=bank_cls_condition,
                 sdp_threshold=sdp_threshold,
             )
             for i in range(depth)
@@ -588,6 +520,7 @@ class ContextViTv4MeM(nn.Module):
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
+        nn.init.normal_(self.tok_bank, std=1e-6)
         nn.init.normal_(self.tok_cls, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
@@ -595,8 +528,9 @@ class ContextViTv4MeM(nn.Module):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
-            cls_token = self.tok_cls.expand(x.shape[0], -1, -1)
-            x = torch.cat((cls_token, x), dim=1) + self.tok_pos_emb
+            cls_token = self.tok_cls.expand(x.size(0), -1, -1)
+            tok_bank = self.tok_bank.expand(x.size(0), -1, -1)
+            x = torch.cat((tok_bank, cls_token, x), dim=1) + self.tok_pos_emb
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
@@ -604,23 +538,21 @@ class ContextViTv4MeM(nn.Module):
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
-        patch_idx = 1 + self.n_registers
+        patch_idx = self.bank_size + 1 + self.n_registers 
         non_patches, patches = x[:, :patch_idx, :], x[:, patch_idx:, :]
         num_keep = int((1 - self.p_token_drop) * self.n_patches)
         r = torch.rand(x.size(0), self.n_patches, device=x.device)
         batch_perms = torch.argsort(r, dim=1)[:, :num_keep]  # [B, num_keep]
-
         batch_idx = torch.arange(x.size(0), device=x.device).unsqueeze(1)  # [B, 1]
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
 
     def forward(self, x):
         x = self.prepare_tokens(x)
-        mem = (True, True) if self.bank_memory else (None, None)
         for blk in self.blocks:
-            x, mem = blk(x, mem)
+            x = blk(x)
         with torch.profiler.record_function("Final Norm"):
-            out = self.norm(x)
+            out = self.norm(x[:, self.bank_size:, :])
         return out[:, 0, :] if self.return_cls_only else out
 
 
