@@ -24,6 +24,7 @@ def init_model(model, args):
         lr = base_lr * (layer_decay ** (n_layers - i))
         params[f"reg_{i + 1}"] = set_param_group(lr, wd)
         params[f"no_reg_{i + 1}"] = set_param_group(lr, wd)
+        print(f"INFO: Block {i} max_lr set to {lr}")
         for p in blocks[i].parameters():
             group = f"reg_{i + 1}" if id(p) in reg_id else f"no_reg_{i + 1}"
             params[group]["params"].append(p)
@@ -33,6 +34,7 @@ def init_model(model, args):
     lr = base_lr * (layer_decay ** (n_layers + 1))
     params["reg_0"] = set_param_group(lr, wd)
     params["no_reg_0"] = set_param_group(lr, wd)
+    print(f"INFO: Tokens/Patcher max_lr set to {lr}")
     for p in model.inner.model.patch_embed.parameters():
         group = "reg_0" if id(p) in reg_id else "no_reg_0"
         params[group]["params"].append(p)
@@ -47,7 +49,9 @@ def init_model(model, args):
     # Outer
     params["reg_outer"] = set_param_group(lr, wd) # TODO base_lr
     params["no_reg_outer"] = set_param_group(lr, wd) # TODO base_lr
+    print(f"INFO: Tokens/Patcher max_lr set to {lr} -> TODO {base_lr}")
     for p in model.parameters():
+        
         if id(p) not in seen:
             group = "reg_outer" if id(p) in reg_id else "no_reg_outer"
             params[group]["params"].append(p)
