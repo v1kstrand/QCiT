@@ -2,12 +2,11 @@ import shutil
 import math
 import torch
 
-def init_model(model, args, use_print):
+def init_model(model, args, print_fn=print):
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
     wd = args.opt["wd_final"]
     layer_decay = args.opt["ld"]
     n_layers = args.vkw["n_layers"]
-    print_fn = print if use_print else lambda x : None
     
     reg_id, seen = set(), set()
     for n, param in model.named_parameters():
