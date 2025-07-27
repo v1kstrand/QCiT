@@ -49,7 +49,7 @@ def init_model(model, args, print_fn=print):
     # Outer
     params["reg_outer"] = set_param_group(lr, wd) # TODO base_lr
     params["no_reg_outer"] = set_param_group(lr, wd) # TODO base_lr
-    print_fn(f"INFO: Tokens/Patcher max_lr set to {lr} -> TODO {base_lr}")
+    print_fn(f"INFO: Outer max_lr set to {lr} -> TODO {base_lr}")
     for p in model.parameters():
         if id(p) not in seen:
             group = "reg_outer" if id(p) in reg_id else "no_reg_outer"
