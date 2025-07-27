@@ -109,7 +109,8 @@ def load_model(args):
             checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
         for n in checkpoint["model"]:
             if n not in models[n]:
-                print(f"Warning: Model {n} not found in checkpoint")
+                print(f"Warning: Model {n} not found in experiment")
+                continue
             models[n].load_state_dict(checkpoint["model"][n])
             optimizers[n].load_state_dict(checkpoint["optimizer"][n])
             models[n].backward.optimizer = optimizers[n].optimizer
