@@ -139,7 +139,7 @@ def plot_data(data_loader, n, mixup_fn=None, exp=None):
     for _ in range(t):
         x1, l1 = next(k)
     for _ in range(torch.randint(1, 100, (1,)).item()):
-        idxs = random.sample(range(x1.size(0)), n)
+        idxs = random.sample(range(x1.size(0)), 50)
     x1 = x1[idxs]
     l1 = l1[idxs]
 
