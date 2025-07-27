@@ -172,7 +172,6 @@ def prep_training(dict_args, exp):
     pprint(save_args)
     print(f"INFO: Setting up experiment: {exp.get_name()}, key: {args.exp_key}")
     print("INFO: Num Patches:", (args.kw["img_size"] // args.vkw["patch_size"]) ** 2)
-    print("INFO: Peak lr:",  (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"])
     if hasattr(args, "exp_cache"):
         print(f"INFO: TORCHINDUCTOR_CACHE_DIR = {args.exp_cache}")
     if args.use_idle_monitor:
