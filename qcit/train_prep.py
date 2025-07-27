@@ -132,8 +132,8 @@ def load_model(args):
 def dump_args(args, root = "/notebooks/", file_name = None):
     file_name = file_name or get_time(get_date=True)
     if root != "/notebooks/":
-        (args.exp_dir / "params").mkdir(parents=True, exist_ok=True)
-    with open(Path(root) / "params" / f"{file_name}.yaml", "w") as f:
+        root.mkdir(parents=True, exist_ok=True)
+    with open(Path(root) / f"{file_name}.yaml", "w") as f:
         yaml.dump(args.save_args, f)
     
 def prep_training(dict_args, exp):
@@ -163,7 +163,7 @@ def prep_training(dict_args, exp):
     save_args["exp_dir"] = str(save_args["exp_dir"])
     save_args["exp_init"] = False
     args.save_args = save_args
-    dump_args(args, args.exp_dir)
+    dump_args(args, args.exp_dir / "params")
     dump_args(args, file_name="params")
     
     exp.set_name(args.exp_name)
