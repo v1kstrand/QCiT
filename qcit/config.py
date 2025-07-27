@@ -3,6 +3,8 @@ os.environ["COMET_DISABLE_AUTO_LOGGING"] = "1"
 os.environ["TORCHINDUCTOR_CUDAGRAPHS"] = "1"
 os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 os.environ["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import torch
 import argparse
 
