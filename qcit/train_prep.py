@@ -86,8 +86,7 @@ def load_model(args):
 
     for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
-        params = init_model(m, args)
-        opt = torch.optim.AdamW([*params.values()], fused=True)
+        opt = torch.optim.AdamW([*init_model(m, args).values()], fused=True)
         optimizers[name] = OptScheduler(opt, args, args.exp if i == 0 else None)
         scalers[name] = scaler = torch.amp.GradScaler("cuda")
         m.backward = PushGrad(opt, scaler, args)

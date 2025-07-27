@@ -54,8 +54,7 @@ def train_loop(modules, exp):
             if batch_time is not None:
                 exp.log_metric("General/Batch time", to_min(batch_time), step=step)
 
-            #opt_sched()
-            _ = [o() for o in opt.values()] 
+            _ = [o() for o in opt.values()]
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 if mixup := args.kw["mixup_p"] >= random.random():

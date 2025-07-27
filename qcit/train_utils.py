@@ -61,9 +61,11 @@ def init_model(model, args):
     return params
 
 
-class OptScheduler(nn.Module):
+#class OptScheduler(nn.Module):
+class OptScheduler():
     def __init__(self, optimizer, args, exp=None, batch_to_step=True):
-        super().__init__()
+        #super().__init__()
+        # no super
         self.optimizer = optimizer
         factor = args.steps_p_epoch if batch_to_step else 1
         self.wu_steps = args.opt["steps_wu"] * factor
@@ -76,7 +78,8 @@ class OptScheduler(nn.Module):
         self.exp = exp
         print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
-    def forward(self, step: int = None):
+    #def forward(self, step: int = None):
+    def __call__(self, step: int = None):
         """
         Call at each training step to update LRs.
         If `step` is provided, uses that instead of internal counter.
