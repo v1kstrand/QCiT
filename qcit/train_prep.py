@@ -115,18 +115,13 @@ def load_model(args):
     else:
         print("INFO: Initializing new model")
     args.exp_init = False
-    
-    for m in args.kw.get("pop_model", []):
-        print(f"INFO: Removing model {m} from models")
-        for d in models, optimizers, scalers:
-            d.pop(m)
 
     if args.compile:
         print("INFO: Compiling model")
         for m in models.values():
             m.compile_model()
 
-    return models, optimizers, scalers #, opt_scheduler
+    return models, optimizers, scalers 
 
 def dump_args(args, root = "/notebooks/", file_name = None):
     file_name = file_name or get_time(get_date=True)

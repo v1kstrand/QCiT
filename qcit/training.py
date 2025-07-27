@@ -34,6 +34,7 @@ def validate(model, loader, name, curr_step, args, exp):
         ratio = val_top1 / model.train_top1_acc
         exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=curr_step)
 
+
 def train_loop(modules, exp):
     models, opt, _,  train_loader, val_loader, mixup_fn, args = modules
     opt_sched = opt[list(opt.keys())[0]]
