@@ -95,9 +95,6 @@ def load_model(args):
         if hasattr(m.inner.model, "init"):
             m.inner.model.init()
 
-    if args.checkpoint_path:
-        print("INFO: Loading from provided checkpoint")
-
     checkpoint_path = args.checkpoint_path or (
         args.exp_dir / "model.pth" if (args.exp_dir / "model.pth").is_file() else None
     )
