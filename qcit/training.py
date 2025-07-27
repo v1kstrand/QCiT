@@ -64,7 +64,7 @@ def train_loop(modules, exp):
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
 
-            if step and step % args.freq["stats"] == 0:
+            if step and step % args.freq["stats"] == 0 and step > start_step + 10:
                 for name, s in stats.items():
                     for k, v in s.items():
                         exp.log_metric(k, sum(v) / len(v), step=step)
@@ -72,9 +72,6 @@ def train_loop(modules, exp):
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:       
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
-                
-                #opt_sched()
-                _ = [o() for o in opt.values()]
                 save_model(modules, "model")
                 del stats
 
