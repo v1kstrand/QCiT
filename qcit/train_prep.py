@@ -164,7 +164,6 @@ def prep_training(dict_args, exp):
     save_args["exp_init"] = False
     args.save_args = save_args
     dump_args(args, args.exp_dir / "params")
-    dump_args(args, file_name="params")
     
     exp.set_name(args.exp_name)
     exp.log_parameters(save_args)
