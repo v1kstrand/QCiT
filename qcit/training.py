@@ -8,7 +8,7 @@ import comet_ml
 
 from .config import AMP_DTYPE
 from .train_utils import save_model
-from .train_prep import prep_training
+from .train_prep import prep_training, dump_args
 from .utils import to_min, get_time
 
 
@@ -97,6 +97,7 @@ def train_loop(modules, exp):
             for name, model in models.items():
                 validate(model, val_loader, name, opt_sched.curr_step, args, exp)
             exp.log_metric("General/Val time", to_min(val_time), step=curr_epoch)
+        dump_args(args, file_name="params")
 
 
 def start_training(dict_args):

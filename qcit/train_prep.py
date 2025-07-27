@@ -129,7 +129,13 @@ def load_model(args):
 
     return models, optimizers, scalers #, opt_scheduler
 
-
+def dump_args(args, root = "/notebooks/", file_name = None):
+    file_name = file_name or get_time(get_date=True)
+    if root != "/notebooks/":
+        (args.exp_dir / "params").mkdir(parents=True, exist_ok=True)
+    with open(Path(root) / "params" / f"{file_name}.yaml", "w") as f:
+        yaml.dump(args.save_args, f)
+    
 def prep_training(dict_args, exp):
     reset(0)
     delete_in_parallel(num_threads=WORKERS)
@@ -156,11 +162,9 @@ def prep_training(dict_args, exp):
     save_args = dict(sorted(vars(args).items()))
     save_args["exp_dir"] = str(save_args["exp_dir"])
     save_args["exp_init"] = False
-    (args.exp_dir / "params").mkdir(parents=True, exist_ok=True)
-    with open(args.exp_dir / "params" / f"{get_time(get_date=True)}.yaml", "w") as f:
-        yaml.dump(save_args, f)
-    #with open("/notebooks/params.yaml", "w") as f:
-        #yaml.dump(save_args, f)
+    args.save_args = save_args
+    dump_args(args, args.exp_dir)
+    dump_args(args, file_name="params")
     
     exp.set_name(args.exp_name)
     exp.log_parameters(save_args)
