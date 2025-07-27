@@ -30,38 +30,6 @@ def get_data_debug(get_args, load_data):
     args.kw["img_size"] = 128
     train_loader, val_loader, _ = load_data(args)
     return train_loader, val_loader
-
-
-def denormalize_and_plot(img1, img2):
-    def denormalize(img):
-        if img.dim() == 4:
-            img = img.squeeze(0)
-
-        mean_tensor = torch.tensor(MEAN).view(3, 1, 1)
-        std_tensor = torch.tensor(STD).view(3, 1, 1)
-        img = img * std_tensor + mean_tensor
-
-        img = img.permute(1, 2, 0).numpy()
-        img = np.clip(img, 0, 1)
-        return img
-
-    n = img1.size(0)
-    _, axes = plt.subplots(math.ceil(n / 2), 4, figsize=(8 * 2, 10))
-    axes = axes.flatten()
-
-    for i in range(n):
-        i1 = denormalize(img1[i])
-        i2 = denormalize(img2[i])
-
-        j = i * 2
-        axes[j].imshow(i1)
-        axes[j].axis("off")
-
-        axes[j + 1].imshow(i2)
-        axes[j + 1].axis("off")
-
-    plt.tight_layout()
-    plt.show()
     
 @torch.no_grad()
 def log_img(x, exp, name):
@@ -124,7 +92,7 @@ def denormalize_and_plot_grid(img_batch, grid_n, exp=None, plot_name="data_sampl
         canvas = fig.canvas
         canvas.draw()
         buf = canvas.buffer_rgba()  
-        w, h = canvas.get_width_height() 
+        w, h = canvas.get_width_height()
         img_rgba = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)
         img_rgb = img_rgba[..., :3] 
         pil_img = Image.fromarray(img_rgb)
