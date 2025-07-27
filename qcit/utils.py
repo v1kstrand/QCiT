@@ -64,11 +64,11 @@ def denormalize_and_plot(img1, img2):
     plt.show()
     
 @torch.no_grad()
-def log_img(a, exp, name):
-    a = a.detach().float().cpu().numpy()
-    indices = np.arange(len(a))
+def log_img(x, exp, name):
+    x = x.detach().float().cpu().numpy()
+    indices = np.arange(len(x))
     fig, ax = plt.subplots()
-    ax.bar(indices, a)
+    ax.bar(indices, x)
 
     canvas = fig.canvas
     canvas.draw()
@@ -80,20 +80,70 @@ def log_img(a, exp, name):
     exp.log_image(Image.fromarray(img_rgb), name=name)
     plt.close(fig)
     
+@torch.no_grad()
+def denormalize_and_plot_grid(img_batch, grid_n, exp=None, plot_name="data_sample"):
+    def denormalize(img):
+        if img.dim() == 4:
+            img = img.squeeze(0)
+
+        mean_tensor = torch.tensor(MEAN, device=img.device).view(3, 1, 1)
+        std_tensor = torch.tensor(STD, device=img.device).view(3, 1, 1)
+        img = img * std_tensor + mean_tensor
+        img = img.permute(1, 2, 0).cpu().numpy()
+        img = np.clip(img, 0, 1)
+        return img
+
+    num_images_in_batch = img_batch.size(0)
+    num_images_to_plot = min(num_images_in_batch, grid_n * grid_n)
+
+    if num_images_to_plot == 0:
+        print("No images to plot in the batch.")
+        return
+
+    rows = math.ceil(num_images_to_plot / grid_n)
+    cols = grid_n
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
+
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    else:
+        axes = axes.flatten()
+
+    for i in range(num_images_to_plot):
+        denormalized_img = denormalize(img_batch[i])
+        ax = axes[i]
+        ax.imshow(denormalized_img)
+        ax.axis("off")
+
+    for j in range(num_images_to_plot, len(axes)):
+        axes[j].axis("off")
+        fig.delaxes(axes[j])
+
+    plt.tight_layout()
+    if exp:
+        canvas = fig.canvas
+        canvas.draw()
+        buf = canvas.buffer_rgba()  
+        w, h = canvas.get_width_height() 
+        img_rgba = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)
+        img_rgb = img_rgba[..., :3] 
+        pil_img = Image.fromarray(img_rgb)
+        exp.log_image(pil_img, name=plot_name)
+    plt.close(fig) 
 
 
-def plot_data(data_loader, n):
+@torch.no_grad()
+def plot_data(data_loader, n, mixup_fn=None, exp=None):
     k = iter(data_loader)
     t = min(torch.randint(1, 5, (1,)).item(), len(data_loader) - 1)
     for _ in range(t):
         x1, l1 = next(k)
-        x2, l2 = next(k)
     for _ in range(torch.randint(1, 100, (1,)).item()):
         idxs = random.sample(range(x1.size(0)), n)
-    x1, x2 = x1[idxs], x2[idxs]
-    l1, l2 = l1[idxs], l2[idxs]
+    x1 = x1[idxs]
+    l1 = l1[idxs]
 
-    mixup_fn = Mixup(
+    mixup_fn = mixup_fn or Mixup(
         mixup_alpha=0.8,  # more mid-range mixes for a bit of hardness (λ∼Beta(0.5,0.5))
         cutmix_alpha=1.0,  # full-sized CutMix patches
         cutmix_minmax=None,  # keep Beta(1.0,1.0) sampling
@@ -105,8 +155,7 @@ def plot_data(data_loader, n):
     )
 
     x1, _ = mixup_fn(x1, l1)
-    x2, _ = mixup_fn(x2, l2)
-    denormalize_and_plot(x1, x2)
+    denormalize_and_plot_grid(x1, n, exp)
 
 def to_min(t):
     return (time.perf_counter() - t) / 60

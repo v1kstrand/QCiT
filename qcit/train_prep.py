@@ -61,11 +61,6 @@ def load_data(args):
         drop_last=True,
     )
 
-    args.steps_p_epoch = len(train_loader)
-    print(f"INFO: Steps Per Epoch: {args.steps_p_epoch}")
-    if args.print_samples > 0:
-        plot_data(train_loader, args.print_samples)
-
     mixup_fn = Mixup(
         mixup_alpha=0.8,
         cutmix_alpha=1.0,
@@ -76,6 +71,11 @@ def load_data(args):
         label_smoothing=args.kw["label_smoothing"],
         num_classes=NUM_CLASSES,
     )
+    
+    args.steps_p_epoch = len(train_loader)
+    print(f"INFO: Steps Per Epoch: {args.steps_p_epoch}")
+    if args.print_samples > 0:
+        plot_data(train_loader, args.print_samples, exp=args.exp)
 
     return train_loader, val_loader, mixup_fn
 
@@ -108,6 +108,8 @@ def load_model(args):
             assert checkpoint_path == args.exp_dir / "model.pth", "Loading failed"
             checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
         for n in checkpoint["model"]:
+            if n not in models[n]:
+                print(f"Warning: Model {n} not found in checkpoint")
             models[n].load_state_dict(checkpoint["model"][n])
             optimizers[n].load_state_dict(checkpoint["optimizer"][n])
             models[n].backward.optimizer = optimizers[n].optimizer
@@ -127,7 +129,7 @@ def dump_args(args, root = "/notebooks/", file_name = None):
     file_name = file_name or get_time(get_date=True)
     if root != "/notebooks/":
         root.mkdir(parents=True, exist_ok=True)
-    with open(Path(root) / f"{file_name}.yaml", "w") as f:
+    with open(Path(root) / f"{file_name}.yaml", "w", encoding="utf-8") as f:
         yaml.dump(args.save_args, f)
     
 def prep_training(dict_args, exp):
@@ -149,7 +151,7 @@ def prep_training(dict_args, exp):
     # Compiling cache
     if args.compile:
         if not args.exp_cache:
-            args.exp_cache = str(Path(args.exp_dir) / "cache")
+            args.exp_cache = str(args.exp_dir / "cache")
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = args.exp_cache
 
     # Set config
