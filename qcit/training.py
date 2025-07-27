@@ -55,7 +55,7 @@ def train_loop(modules, exp):
                 exp.log_metric("General/Batch time", to_min(batch_time), step=step)
 
             #opt_sched()
-            _ = [o.step() for o in opt.values()] 
+            _ = [o() for o in opt.values()] 
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 if mixup := args.kw["mixup_p"] >= random.random():
@@ -74,7 +74,7 @@ def train_loop(modules, exp):
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
                 
                 #opt_sched()
-                _ = [o.step() for o in opt.values()]
+                _ = [o() for o in opt.values()]
                 save_model(modules, "model")
                 del stats
 
