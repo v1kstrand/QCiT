@@ -109,7 +109,7 @@ def load_model(args):
             assert checkpoint_path == args.exp_dir / "model.pth", "Loading failed"
             checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
         for n in checkpoint["model"]:
-            if n not in models[n]:
+            if n not in models:
                 print(f"Warning: Model {n} not found in experiment")
                 continue
             models[n].load_state_dict(checkpoint["model"][n])
