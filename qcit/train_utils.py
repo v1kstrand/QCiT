@@ -3,18 +3,17 @@ import math
 import torch
 
 def init_model(model, args):
-    regularized, not_regularized, reg_id = [], [], set()
-    for n, param in model.named_parameters():
-        if n.endswith(".bias") or len(param.shape) == 1:
-            not_regularized.append(param)
-        else:
-            regularized.append(param)
-            reg_id.add(id(param))
-
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
     wd = args.opt["wd_final"]
     layer_decay = args.opt["ld"]
     n_layers = args.vkw["n_layers"]
+    
+    reg_id, seen = set(), set()
+    for n, param in model.named_parameters():
+        if n.endswith(".bias") or len(param.shape) == 1:
+            continue
+        reg_id.add(id(param))
+        
     def set_param_group(lr, wd):
         return {"params": [], "lr": lr, "weight_decay": wd, "lr_max": lr}
 
@@ -28,6 +27,7 @@ def init_model(model, args):
         for p in blocks[i].parameters():
             group = f"reg_{i + 1}" if id(p) in reg_id else f"no_reg_{i + 1}"
             params[group]["params"].append(p)
+            seen.add(id(p))
 
     # Patcher
     lr = base_lr * (layer_decay ** (n_layers + 1))
@@ -36,25 +36,20 @@ def init_model(model, args):
     for p in model.inner.model.patch_embed.parameters():
         group = "reg_0" if id(p) in reg_id else "no_reg_0"
         params[group]["params"].append(p)
+        seen.add(id(p))
 
     # Tokens
     for n, p in model.inner.model.named_parameters(recurse=False):
-        if not n.startswith("tok_"):
-            continue
-        params["no_reg_0"]["params"].append(p)
-
-    # Store all curr params
-    seen = set()
-    for g in params.values():
-        for p in g["params"]:
+        if n.startswith("tok_"):
+            params["no_reg_0"]["params"].append(p)
             seen.add(id(p))
-
-    # Inner
-    params["reg_inner"] = set_param_group(lr, wd)
-    params["no_reg_inner"] = set_param_group(lr, wd)
-    for p in regularized + not_regularized:
+            
+    # Outer
+    params["reg_outer"] = set_param_group(lr, wd) # TODO base_lr
+    params["no_reg_outer"] = set_param_group(lr, wd) # TODO base_lr
+    for p in model.parameters():
         if id(p) not in seen:
-            group = "reg_inner" if id(p) in reg_id else "no_reg_inner"
+            group = "reg_outer" if id(p) in reg_id else "no_reg_outer"
             params[group]["params"].append(p)
 
     return params
