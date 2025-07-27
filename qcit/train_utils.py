@@ -2,11 +2,12 @@ import shutil
 import math
 import torch
 
-def init_model(model, args):
+def init_model(model, args, use_print):
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
     wd = args.opt["wd_final"]
     layer_decay = args.opt["ld"]
     n_layers = args.vkw["n_layers"]
+    print_fn = print if use_print else lambda x : None
     
     reg_id, seen = set(), set()
     for n, param in model.named_parameters():
@@ -21,10 +22,10 @@ def init_model(model, args):
     blocks = model.inner.model.blocks
     params = {}
     for i in range(len(blocks) - 1, -1, -1):
-        lr = base_lr * (layer_decay ** (n_layers - i))
+        lr = base_lr * (layer_decay ** (n_layers - i)) # TODO +1
         params[f"reg_{i + 1}"] = set_param_group(lr, wd)
         params[f"no_reg_{i + 1}"] = set_param_group(lr, wd)
-        print(f"INFO: Block {i} max_lr set to {lr}")
+        print_fn(f"INFO: Block {i} max_lr set to {lr}")
         for p in blocks[i].parameters():
             group = f"reg_{i + 1}" if id(p) in reg_id else f"no_reg_{i + 1}"
             params[group]["params"].append(p)
@@ -34,7 +35,7 @@ def init_model(model, args):
     lr = base_lr * (layer_decay ** (n_layers + 1))
     params["reg_0"] = set_param_group(lr, wd)
     params["no_reg_0"] = set_param_group(lr, wd)
-    print(f"INFO: Tokens/Patcher max_lr set to {lr}")
+    print_fn(f"INFO: Tokens/Patcher max_lr set to {lr}")
     for p in model.inner.model.patch_embed.parameters():
         group = "reg_0" if id(p) in reg_id else "no_reg_0"
         params[group]["params"].append(p)
@@ -49,7 +50,7 @@ def init_model(model, args):
     # Outer
     params["reg_outer"] = set_param_group(lr, wd) # TODO base_lr
     params["no_reg_outer"] = set_param_group(lr, wd) # TODO base_lr
-    print(f"INFO: Tokens/Patcher max_lr set to {lr} -> TODO {base_lr}")
+    print_fn(f"INFO: Tokens/Patcher max_lr set to {lr} -> TODO {base_lr}")
     for p in model.parameters():
         if id(p) not in seen:
             group = "reg_outer" if id(p) in reg_id else "no_reg_outer"
