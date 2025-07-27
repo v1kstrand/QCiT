@@ -110,7 +110,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-class ContextAttentionV5(nn.Module):
+class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -227,7 +227,7 @@ class Block(nn.Module):
         super().__init__()
         self.sdp_threshold = sdp_threshold
         self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
-        self.attn = ContextAttentionMeM(
+        self.attn = ContextAttention(
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
@@ -422,7 +422,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv4MeM(nn.Module):
+class ContextViTv5(nn.Module):
     def __init__(
         self,
         img_size=224,

@@ -12,8 +12,6 @@ from .train_prep import prep_training
 from .utils import to_min, get_time
 
 
-
-
 @torch.no_grad()
 def validate(model, loader, name, curr_step, args, exp):
     model.eval()
@@ -43,6 +41,7 @@ def train_loop(modules, exp):
 
     stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
+        
         # -- Epoch Start --
         curr_epoch = opt_sched.curr_step // args.steps_p_epoch
         next_epoch = opt_sched.curr_step + len(train_loader)
@@ -75,7 +74,7 @@ def train_loop(modules, exp):
                     exp.log_metric("General/Stat time", to_min(stats_time), step=step)
                 
                 #opt_sched()
-                _ = [o.step() for o in opt.values()] 
+                _ = [o.step() for o in opt.values()]
                 save_model(modules, "model")
                 del stats
 
