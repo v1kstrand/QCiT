@@ -134,7 +134,7 @@ def get_args():
     parser.add_argument("--compile", action="store_true")
     
     # Exp
-    parser.add_argument("--exp_default_root", type=str, default="/notebooks/runs/exp")
+    parser.add_argument("--exp_root", type=str, default="/notebooks/runs/exp")
     parser.add_argument("--exp_dir", type=str, default=None)
     parser.add_argument("--exp_key", type=str, default=None)
     parser.add_argument("--exp_info", type=str, default="")

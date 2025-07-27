@@ -145,7 +145,7 @@ def prep_training(dict_args, exp):
         setattr(args, key, value)
     
     if not args.exp_dir:
-        args.exp_dir = args.exp_default_root.replace("exp", args.exp_name)
+        args.exp_dir = args.exp_root.replace("exp", args.exp_name)
     args.exp_dir = Path(args.exp_dir)
     args.exp_dir.mkdir(parents=True, exist_ok=True)
     args.exp_key = exp.get_key()
