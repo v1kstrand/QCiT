@@ -122,7 +122,7 @@ class CompressorBlock(nn.Module):
         if k_queries > 1:
             self.cls_to_weights = nn.Linear(input_dim, k_queries)
 
-        self.pre_norm = nn.LayerNorm(input_dim) # TODO Move to CompressorPath
+        self.pre_norm = nn.LayerNorm(input_dim) 
         self.kv_proj = nn.Linear(input_dim, 2 * output_dim, bias=qkv_bias)
         self.proj = nn.Linear(output_dim, output_dim, bias=proj_bias)
         self.cls_proj = nn.Linear(input_dim, output_dim, bias=proj_bias)
