@@ -520,7 +520,7 @@ class QCiT(nn.Module):
 
         assert (
             drop_path_uniform is True
-        ), "drop_path_uniform must be True for QCit (TODO)"
+        ), "drop_path_uniform must be True for QCit"
         if drop_path_uniform is True:
             dpr = [drop_path_rate] * depth
         else:
