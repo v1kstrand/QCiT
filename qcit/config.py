@@ -32,7 +32,7 @@ VIT_CONFIG = {
 }
 
 if "A100" in torch.cuda.get_device_name():
-    print("INFO: GPU: A100")
+    print("INFO: GPU - A100")
     AMP_DTYPE = torch.bfloat16
     CUDA_DEVICE = "A100"
 else:
