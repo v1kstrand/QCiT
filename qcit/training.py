@@ -13,9 +13,9 @@ from .utils import to_min, get_time
 
 
 @torch.no_grad()
-def validate(model, loader, name, curr_step, args, exp):
+def validate_(model, loader, name, curr_step, args, exp=None):
     model.eval()
-    stats = defaultdict(list)
+    stats, val_time = defaultdict(list), time.perf_counter()
     curr_epoch = curr_step // args.steps_p_epoch
 
     for step, data in enumerate(loader):
@@ -33,12 +33,38 @@ def validate(model, loader, name, curr_step, args, exp):
     if val_top1 and hasattr(model, "train_top1_acc"):
         ratio = val_top1 / model.train_top1_acc
         exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=curr_step)
+        
+@torch.no_grad()
+def validate(models, loader, curr_step, args, exp):
+    models.eval()
+    stats, val_time = defaultdict(list), time.perf_counter()
+    curr_epoch = curr_step // args.steps_p_epoch
+    
+    for step, data in enumerate(loader):
+        print(f"Validating - Epoch: {curr_epoch} - Step: {step} / {len(loader)} [{get_time()}]")
+        with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
+            imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
+            for name, model in models.items():
+                model.forward(imgs, labels, stats[name])
 
+    for name, s in stats.items():
+        for k, v in s.items():
+            exp.log_metric(k, sum(v) / len(v), step=curr_step)
+            if "Top-1" in k:
+                models[name].val_top1_acc = sum(v) / len(v)
+    
+    for name, model in models.items():
+        if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
+            ratio = model.val_top1_acc / model.train_top1_acc
+            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=curr_step)
+    exp.log_metric("General/Val time", to_min(val_time), step=curr_epoch)
 
 def train_loop(modules, exp):
     models, opt, _,  train_loader, val_loader, mixup_fn, args = modules
     opt_sched = opt[list(opt.keys())[0]]
     next_stats, init_run = opt_sched.curr_step + args.freq["stats"], True
+    validate(models, val_loader, 0, args, exp)
+    assert False, "Done"
 
     stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
@@ -93,10 +119,7 @@ def train_loop(modules, exp):
         if args.freq["eval"] == 1 or (
             curr_epoch and curr_epoch % args.freq["eval"] == 0
         ):
-            val_time = time.perf_counter()
-            for name, model in models.items():
-                validate(model, val_loader, name, opt_sched.curr_step, args, exp)
-            exp.log_metric("General/Val time", to_min(val_time), step=curr_epoch)
+            validate(models, val_loader, opt_sched.curr_step, args, exp)
         dump_args(args, file_name="params")
 
 

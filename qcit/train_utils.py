@@ -21,7 +21,7 @@ def init_model(model, args, print_fn=print):
     blocks = model.inner.model.blocks
     params = {}
     for i in range(len(blocks) - 1, -1, -1):
-        lr = base_lr * (layer_decay ** (n_layers - i)) # TODO +1
+        lr = base_lr * (layer_decay ** (n_layers - i + 1)) # TODO +1
         params[f"reg_{i + 1}"] = set_param_group(lr, wd)
         params[f"no_reg_{i + 1}"] = set_param_group(lr, wd)
         print_fn(f"INFO: Block {i} max_lr set to {lr}")
@@ -47,9 +47,9 @@ def init_model(model, args, print_fn=print):
             seen.add(id(p))
             
     # Outer
-    params["reg_outer"] = set_param_group(lr, wd) # TODO base_lr
-    params["no_reg_outer"] = set_param_group(lr, wd) # TODO base_lr
-    print_fn(f"INFO: Outer max_lr set to {lr} -> TODO {base_lr}")
+    params["reg_outer"] = set_param_group(base_lr, wd)
+    params["no_reg_outer"] = set_param_group(base_lr, wd)
+    print_fn(f"INFO: Outer max_lr set to {base_lr}")
     for p in model.parameters():
         if id(p) not in seen:
             group = "reg_outer" if id(p) in reg_id else "no_reg_outer"
