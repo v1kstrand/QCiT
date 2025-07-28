@@ -37,7 +37,7 @@ def validate_(model, loader, name, curr_step, args, exp=None):
 @torch.no_grad()
 def validate(models, loader, curr_step, args, exp):
     models.eval()
-    stats, val_time = defaultdict(list), time.perf_counter()
+    stats, val_time = {name: defaultdict(list) for name in models}, time.perf_counter()
     curr_epoch = curr_step // args.steps_p_epoch
     
     for step, data in enumerate(loader):
