@@ -74,7 +74,7 @@ def load_data(args):
     args.steps_p_epoch = len(train_loader)
     print(f"INFO: Steps Per Epoch: {args.steps_p_epoch}")
     if args.print_samples > 0:
-        print("INFO: Logging data samples to Comet")
+        print("INFO: Logging Data Samples To Comet Exp")
         plot_data(train_loader, args.print_samples, exp=args.exp)
 
     return train_loader, val_loader, mixup_fn
