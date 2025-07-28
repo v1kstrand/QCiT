@@ -10,11 +10,10 @@ from timm.data import create_transform, Mixup
 
 from modules.utils import IdleMonitor, delete_in_parallel
 from .model import OuterModel, PushGrad
-from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args
+from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, set_torch_config
 from .data import HFImageDataset
 from .train_utils import init_model, OptScheduler
 from .utils import plot_data, reset, get_time
-
 
 
 def load_data(args):
@@ -135,6 +134,7 @@ def dump_args(args, root = "/notebooks/", file_name = None):
 def prep_training(dict_args, exp):
     reset(0)
     delete_in_parallel(num_threads=WORKERS)
+    set_torch_config()
     
     args = get_args()
     for key, value in dict_args.items():
