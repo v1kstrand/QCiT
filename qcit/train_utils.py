@@ -21,7 +21,7 @@ def init_model(model, args, print_fn=print):
     blocks = model.inner.model.blocks
     params = {}
     for i in range(len(blocks) - 1, -1, -1):
-        lr = base_lr * (layer_decay ** (n_layers - i + 1))
+        lr = base_lr * (layer_decay ** (n_layers - i - 1))
         params[f"reg_{i + 1}"] = set_param_group(lr, wd)
         params[f"no_reg_{i + 1}"] = set_param_group(lr, wd)
         print_fn(f"INFO: Block {i} max_lr set to {lr}")
@@ -31,7 +31,7 @@ def init_model(model, args, print_fn=print):
             seen.add(id(p))
 
     # Patcher
-    lr = base_lr * (layer_decay ** (n_layers + 1))
+    lr = base_lr * (layer_decay ** n_layers)
     params["reg_0"] = set_param_group(lr, wd)
     params["no_reg_0"] = set_param_group(lr, wd)
     print_fn(f"INFO: Tokens/Patcher max_lr set to {lr}")
