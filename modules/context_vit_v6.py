@@ -162,28 +162,23 @@ class ContextAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, L, D = x.shape
+        B, L, D = x.shape # bank_tokens = x[:, :M], inp_tokens = x[:, M:]
         H, d = self.n_h, self.h_d
         M, T = self.bank_size, self.query_t # N = L - M
 
-        # Project once and reshape directly to [B, H, L, d]
-        qkv = self.proj_x(x).view(B, L, 3, H, d).permute(2, 0, 3, 1, 4)
-        q_x, k_x, v_x = qkv  # each: [B, H, L, d]
+        # Project once and reshape directly to [B, H, L, d] o(3LD^2)
+        q_x, k_x, v_x = self.proj_x(x).view(B, L, 3, H, d).permute(2, 0, 3, 1, 4)
 
         # Bank tokens and generate queries
         bank_tokens = x[:, :M]  # [B, M, D]
-        q_bank = self.proj_q(bank_tokens).view(B, M * T, H, d).transpose(1, 2)  # [B, H, MT, d]
-
-        # Separate non-bank tokens directly
-        k_nonbank = k_x[:, :, M:]  # [B, H, N, d]
-        v_nonbank = v_x[:, :, M:]  # [B, H, N, d]
+        q_bank = self.proj_q(bank_tokens).view(B, M * T, H, d).transpose(1, 2)  # [B, H, MT, d] o(MTD^2)
 
         # Context attention
-        ctx_attn = self.sdpa(q_bank, k_nonbank, v_nonbank)  # [B, H, MT, d]
+        ctx_attn = self.sdpa(q_bank, k_x[:, :, M:], v_x[:, :, M:])  # [B, H, MT, d] o(TMND)
         ctx_attn = ctx_attn.transpose(1, 2).reshape(B, M*T, D)
 
         # Context projection (to KV)
-        kv_ctx = self.proj_ctx(self.norm_ctx(ctx_attn)).view(B, M*T, 2, H, d) # # [B, MT, 2, H, d]
+        kv_ctx = self.proj_ctx(self.norm_ctx(ctx_attn)).view(B, M*T, 2, H, d) # # [B, MT, 2, H, d] o(2TMD^2)
         k_ctx, v_ctx = kv_ctx[:, :, 0].transpose(1, 2), kv_ctx[:, :, 1].transpose(1, 2)  # [B, H, MT, d]
 
         # Combine context tokens with original bank tokens
@@ -191,9 +186,9 @@ class ContextAttention(nn.Module):
         v_combined = torch.cat([v_ctx, v_x[:, :, :M]], dim=2)  # [B, H, MT+M, d]
 
         # Final attention (global tokens attend to compressed context)
-        out_attn = self.sdpa(q_x, k_combined, v_combined)  # [B, H, L, d]
+        out_attn = self.sdpa(q_x, k_combined, v_combined)  # [B, H, L, d] o(ML(T+1))
         out_attn = out_attn.transpose(1, 2).reshape(B, L, D)
-        return self.out_drop(self.out_x(out_attn)) # [B, L, D]
+        return self.out_drop(self.out_x(out_attn)) # [B, L, D] O(LD^2)
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:
@@ -209,12 +204,6 @@ class ContextAttention(nn.Module):
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
             return self._forward(x)
-
-
-
-# # Block
-
-# In[6]:
 
 
 # # Block
