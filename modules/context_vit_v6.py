@@ -161,23 +161,8 @@ class ContextAttention(nn.Module):
         B, _, N, _ = q.size()
         attn = self.sdpa(q, k, v, dropout_p=self.attn_drop_v if self.training else 0)
         return attn.transpose(1, 2).reshape(B, N, -1)
-
-    def __forward(self, x):
-        B, L, _ = x.size()
-        M, T, H, D = self.bank_size, self.query_t, self.n_h, self.h_d
-        
-        q_x, k_x, v_x = self.proj_x(x).view(B, L, 3, H, D).permute(2, 0, 3, 1, 4) # 3[B, H, L, D] o(L3D^2)
-        Q = self.proj_q(x[:, :M, :]).view(B, M, T, H, D).permute(0, 3, 1, 2, 4) # [B, H, M, T, D] o(MTD^2)
-        ctx = self.sdpa_w_reshape(Q.reshape(B, H, M*T, D), k_x[:, :, M:, :], v_x[:, :, M:, :])  # [B, TM, D] o(TMND)
-        
-        kv_ctx = self.proj_ctx(self.norm_ctx(ctx)) # [B, TM, 2D] - o(2TMD^2)
-        k_ctx, v_ctx = kv_ctx.view(B, M*T, 2, H, D).permute(2, 0, 3, 1, 4) # 2[B, TM, D]
-        
-        K, V = torch.cat((k_ctx, k_x[:, :, :M, :]), 2), torch.cat((v_ctx, v_x[:, :, :M, :]), 2) # 2[B, 2MT, D]
-        x_attn = self.sdpa_w_reshape(q_x, K, V)  # [B, L, D] o(ML(T+1))
-        return self.out_drop(self.out_x(x_attn))  # [B, L, D] O(LD^2)
     
-    def _forward(self, x):
+    def __forward(self, x):
         B, L, _ = x.size()
         M, T, H, D = self.bank_size, self.query_t, self.n_h, self.h_d
 
@@ -223,6 +208,46 @@ class ContextAttention(nn.Module):
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
             return self._forward(x)
+        
+
+    def sdpa(self, q, k, v):
+        dropout_p = self.attn_drop if self.training else 0
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+
+    def _forward(self, x):
+        B, L, D = x.shape
+        H, d = self.n_h, self.h_d
+        M, T = self.bank_size, self.query_t # N = L - M
+
+        # Project once and reshape directly to [B, H, L, d]
+        qkv = self.proj_x(x).view(B, L, 3, H, d).permute(2, 0, 3, 1, 4)
+        q_x, k_x, v_x = qkv  # each: [B, H, L, d]
+
+        # Bank tokens and generate queries
+        bank_tokens = x[:, :M]  # [B, M, D]
+        q_bank = self.proj_q(bank_tokens).view(B, M * T, H, d).transpose(1, 2)  # [B, H, MT, d]
+
+        # Separate non-bank tokens directly
+        k_nonbank = k_x[:, :, M:]  # [B, H, N, d]
+        v_nonbank = v_x[:, :, M:]  # [B, H, N, d]
+
+        # Context attention
+        ctx_attn = self.sdpa(q_bank, k_nonbank, v_nonbank)  # [B, H, MT, d]
+        ctx_attn = ctx_attn.transpose(1, 2).reshape(B, M*T, D)
+
+        # Context projection (to KV)
+        kv_ctx = self.proj_ctx(self.norm_ctx(ctx_attn)).view(B, M*T, 2, H, d) # # [B, MT, 2, H, d]
+        k_ctx, v_ctx = kv_ctx[:, :, 0].transpose(1, 2), kv_ctx[:, :, 1].transpose(1, 2)  # [B, H, MT, d]
+
+        # Combine context tokens with original bank tokens
+        k_combined = torch.cat([k_ctx, k_x[:, :, :M]], dim=2)  # [B, H, MT+M, d]
+        v_combined = torch.cat([v_ctx, v_x[:, :, :M]], dim=2)  # [B, H, MT+M, d]
+
+        # Final attention (global tokens attend to compressed context)
+        out_attn = self.sdpa(q_x, k_combined, v_combined)  # [B, H, L, d]
+        out_attn = out_attn.transpose(1, 2).reshape(B, L, D)
+        return self.out_drop(self.out_x(out_attn)) # [B, L, D]
+
 
 
 # # Block
