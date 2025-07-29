@@ -166,21 +166,6 @@ class ContextAttention(nn.Module):
         B, L, _ = x.size()
         M, T, H, D = self.bank_size, self.query_t, self.n_h, self.h_d
         
-        q_x, k_x, v_x = self.proj_x(x).reshape(B, L, 3, H, D).permute(2, 0, 3, 1, 4) # 3[B, H, L, D] o(L3D^2)
-        Q = self.proj_q(x[:, :M, :]).reshape(B, M, T, H, D).permute(0, 3, 1, 2, 4) # [B, H, M, T, D] o(MTD^2)
-        ctx = self.sdpa_w_reshape(Q.reshape(B, H, M*T, D), k_x[:, :, M:, :], v_x[:, :, M:, :])  # [B, TM, D] o(TMND)
-        
-        kv_ctx = self.proj_ctx(self.norm_ctx(ctx)) # [B, TM, 2D] - o(2TMD^2)
-        k_ctx, v_ctx = kv_ctx.reshape(B, M*T, 2, H, D).permute(2, 0, 3, 1, 4) # 2[B, TM, D]
-        
-        K, V = torch.cat((k_ctx, k_x[:, :, :M, :]), 2), torch.cat((v_ctx, v_x[:, :, :M, :]), 2) # 2[B, 2MT, D]
-        x_attn = self.sdpa_w_reshape(q_x, K, V)  # [B, L, D] o(ML(T+1))
-        return self.out_drop(self.out_x(x_attn))  # [B, L, D] O(LD^2)
-    
-    def _forward(self, x):
-        B, L, _ = x.size()
-        M, T, H, D = self.bank_size, self.query_t, self.n_h, self.h_d
-        
         q_x, k_x, v_x = self.proj_x(x).view(B, L, 3, H, D).permute(2, 0, 3, 1, 4) # 3[B, H, L, D] o(L3D^2)
         Q = self.proj_q(x[:, :M, :]).view(B, M, T, H, D).permute(0, 3, 1, 2, 4) # [B, H, M, T, D] o(MTD^2)
         ctx = self.sdpa_w_reshape(Q.reshape(B, H, M*T, D), k_x[:, :, M:, :], v_x[:, :, M:, :])  # [B, TM, D] o(TMND)
@@ -192,6 +177,37 @@ class ContextAttention(nn.Module):
         x_attn = self.sdpa_w_reshape(q_x, K, V)  # [B, L, D] o(ML(T+1))
         return self.out_drop(self.out_x(x_attn))  # [B, L, D] O(LD^2)
     
+    def _forward(self, x):
+        B, L, _ = x.size()
+        M, T, H, D = self.bank_size, self.query_t, self.n_h, self.h_d
+
+        # Project to QKV and separate
+        proj_x = self.proj_x(x).view(B, L, 3, H, D)  # [B, L, 3, H, D] o(3LD^2)
+        q_x, k_x, v_x = proj_x.permute(2, 0, 3, 1, 4)  # [3, B, H, L, D]
+
+        # Project bank queries
+        x_bank = x[:, :M, :]  # [B, M, D]
+        Q = self.proj_q(x_bank).view(B, M, T, H, D)  # [B, H, M, T, D] o(MTD^2)
+        Q = Q.permute(0, 3, 1, 2, 4).reshape(B, H, M*T, D)  # [B, H, MT, D]
+
+        # Non-bank keys/values
+        k_inp = k_x[:, :, M:, :]  # [B, H, N, D]
+        v_inp = v_x[:, :, M:, :]  # [B, H, N, D]
+
+        # Context attention over non-bank
+        ctx = self.sdpa_w_reshape(Q, k_inp, v_inp)  # [B, MT, D] o(TMND)
+
+        # Project context and split into K/V for later concat
+        kv_ctx = self.proj_ctx(self.norm_ctx(ctx))  # [B, MT, 2D] o(2TMD^2)
+        k_ctx, v_ctx = kv_ctx.view(B, M*T, 2, H, D).permute(2, 0, 3, 1, 4)  # 2 [B, H, MT, D]
+
+        # Bank + input: concatenate along seq
+        k_cat = torch.cat((k_ctx, k_x[:, :, :M, :]), dim=2)  # [B, H, 2MT, D]
+        v_cat = torch.cat((v_ctx, v_x[:, :, :M, :]), dim=2)  # [B, H, 2MT, D]
+
+        # Final SDPA: full input attends to all tokens
+        x_attn = self.sdpa_w_reshape(q_x, k_cat, v_cat)  # [B, L, D] o(ML(T+1))
+        return self.out_drop(self.out_x(x_attn))  # [B, L, D] O(LD^2)
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:
