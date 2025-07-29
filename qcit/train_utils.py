@@ -87,8 +87,8 @@ class OptScheduler:
             wd_curr = self._set_wd_cosine(step)
         self.curr_step += 1
 
-        if self.exp is not None:
-            self.exp.log_metric(f"General/LR {self.name}", lr_curr, step=step)
+        if self.exp is not None and step % 10 == 0:
+            self.exp.log_metric(f"General/LR {self.name}", lr_curr, step=step) # TODO rename
             self.exp.log_metric(f"General/WD {self.name}", wd_curr, step=step)
 
     def _set_warm_up(self, step: int):
