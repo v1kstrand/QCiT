@@ -57,8 +57,8 @@ def init_model(model, args, print_fn=print):
 
     return params
 
-class OptScheduler():
-    def __init__(self, optimizer, args, exp=None, batch_to_step=True):
+class OptScheduler:
+    def __init__(self, optimizer, args, exp=None, name=None, batch_to_step=True):
         self.optimizer = optimizer
         factor = args.steps_p_epoch if batch_to_step else 1
         self.wu_steps = args.opt["steps_wu"] * factor
@@ -68,8 +68,10 @@ class OptScheduler():
         self.wd_start = args.opt["wd_init"]
         self.wd_end = args.opt["wd_final"]
         self.curr_step = 1
+        self.name = name
         self.exp = exp
-        print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
+        if exp is not None:
+            print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
     def __call__(self, step: int = None):
         """
@@ -86,8 +88,8 @@ class OptScheduler():
         self.curr_step += 1
 
         if self.exp is not None:
-            self.exp.log_metric("General/LR", lr_curr, step=step)
-            self.exp.log_metric("General/WD", wd_curr, step=step)
+            self.exp.log_metric(f"General/LR {self.name}", lr_curr, step=step)
+            self.exp.log_metric(f"General/WD {self.name}", wd_curr, step=step)
 
     def _set_warm_up(self, step: int):
         """Linearly ramp LR from wu_start → lr_max over wu_steps."""
@@ -144,6 +146,7 @@ class OptScheduler():
             "wd_start": self.wd_start,
             "wd_end": self.wd_end,
             "curr_step": self.curr_step,
+            "name" : self.name
         }
 
     def load_state_dict(self, sd):
