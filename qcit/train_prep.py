@@ -110,6 +110,7 @@ def load_model(args):
             if n not in models:
                 print(f"Warning: Model {n} not found in experiment")
                 continue
+            print(f"INFO: Checkpoint ({n}) Successfully Loaded")
             models[n].load_state_dict(checkpoint["model"][n])
             optimizers[n].load_state_dict(checkpoint["optimizer"][n])
             models[n].backward.optimizer = optimizers[n].optimizer
