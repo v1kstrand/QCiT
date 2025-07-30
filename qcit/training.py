@@ -13,7 +13,8 @@ from .utils import to_min, get_time
 
         
 @torch.no_grad()
-def validate(models, sched, loader, args, exp):
+def validate(model_dict, data_dict, args, exp):
+    models, sched, loader = model_dict["models"], model_dict["schedulers"], data_dict["val_loader"]
     models.eval()
     stats, val_time = {name: defaultdict(list) for name in models}, time.perf_counter()
     curr_epoch = sched[args.opt["log"][0]].curr_step // args.steps_p_epoch
@@ -37,8 +38,8 @@ def validate(models, sched, loader, args, exp):
             exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
     exp.log_metric("General/Time Val", to_min(val_time), step=curr_epoch)
 
-def train_loop(modules, exp, magic=10):
-    models, sched, _, train_loader, val_loader, mixup_fn, args = modules
+def train_loop(model_dict, data_dict, args, exp, magic=10):
+    models, sched, loader = model_dict["models"], model_dict["schedulers"], data_dict["train_loader"]
     tracker = sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
@@ -47,12 +48,12 @@ def train_loop(modules, exp, magic=10):
         
         # -- Epoch Start --
         curr_epoch = tracker.curr_step // args.steps_p_epoch
-        next_epoch = tracker.curr_step + len(train_loader)
+        next_epoch = tracker.curr_step + len(loader)
         batch_time = stats_time = None
         start_step, epoch_time = tracker.curr_step, time.perf_counter()
 
         models.train()
-        for step, data in enumerate(train_loader, start=start_step):
+        for step, data in enumerate(loader, start=start_step):
             print(f"Epoch: {curr_epoch} - Step: {step} | Next Stats @ {next_stats} - Next Epoch @ {next_epoch} [{get_time()}]")
             if batch_time is not None and step % magic == 0:
                 exp.log_metric("General/Time Batch", to_min(batch_time), step=step)
@@ -61,7 +62,7 @@ def train_loop(modules, exp, magic=10):
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 if mixup := args.kw["mixup_p"] >= random.random():
-                    imgs, labels = mixup_fn(imgs, labels)
+                    imgs, labels = data_dict["mixup"](imgs, labels)
                 time_it = step % args.freq["time_it"] if step > start_step + magic else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
@@ -74,7 +75,7 @@ def train_loop(modules, exp, magic=10):
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:
                     exp.log_metric("General/Time Stat", to_min(stats_time), step=step)
-                save_model(modules, "model")
+                save_model(model_dict, args, "model")
                 del stats
 
                 stats_time = time.perf_counter()
@@ -90,12 +91,12 @@ def train_loop(modules, exp, magic=10):
         if args.freq["save"] == 1 or (
             curr_epoch and curr_epoch % args.freq["save"] == 0
         ):
-            save_model(modules, name=f"model_{curr_epoch}")
+            save_model(model_dict, args, f"model_{curr_epoch}")
 
         if args.freq["eval"] == 1 or (
             curr_epoch and curr_epoch % args.freq["eval"] == 0
         ):
-            validate(models, sched, val_loader, args, exp)
+            validate(model_dict, data_dict, args, exp)
         dump_args(args, file_name="params")
 
 

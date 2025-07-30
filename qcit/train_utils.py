@@ -161,17 +161,16 @@ class OptScheduler:
             else:
                 self.optimizer.load_state_dict(v)
 
-def save_model(modules, name):
-    model, optimizer, scaler, *_, args = modules
-    save_path = args.exp_dir / (name + ".pth")
+def save_model(model_dict, args, file_name):
+    save_path = args.exp_dir / (file_name + ".pth")
     if save_path.exists():
-        shutil.copy(save_path, args.exp_dir / (name + "_prev.pth"))
+        shutil.copy(save_path, args.exp_dir / (file_name + "_prev.pth"))
 
     torch.save(
         {
-            "model": {n: m.state_dict() for n, m in model.items()},
-            "optimizer": {n: o.state_dict() for n, o in optimizer.items()},
-            "scaler": {n: s.state_dict() for n, s in scaler.items()},
+            "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
+            "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
+            "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
         },
         save_path,
     )

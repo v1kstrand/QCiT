@@ -75,7 +75,8 @@ def load_data(args):
         print("INFO: Logging Data Samples To Comet")
         plot_data(train_loader, args.print_samples, exp=args.exp)
 
-    return train_loader, val_loader, mixup_fn
+    return {"train_loader" : train_loader, "val_loader" : val_loader, "mixup" : mixup_fn}
+
 
 def load_model(args):
     models = nn.ModuleDict()
@@ -122,7 +123,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return models, schedulers, scalers
+    return {"models" : models, "schedulers" :schedulers, "scalers" : scalers}
     
 def prep_training(dict_args, exp):
     reset(0)
@@ -171,6 +172,6 @@ def prep_training(dict_args, exp):
         print("DEBUG: torch.autograd.set_detect_anomaly Is Activated")
         torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
-    train_loader, val_loader, mixup_fn = load_data(args)
-    models, schedulers, scalers = load_model(args)
-    return models, schedulers, scalers, train_loader, val_loader, mixup_fn, args
+    data_dict = load_data(args)
+    model_dict = load_model(args)
+    return model_dict, data_dict,  args
