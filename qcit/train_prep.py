@@ -1,9 +1,7 @@
-
 from pathlib import Path
 from pprint import pprint
 import os
 import torch
-import yaml
 from torch import nn
 from torchvision import transforms
 from timm.data import create_transform, Mixup
@@ -12,8 +10,8 @@ from modules.utils import IdleMonitor, delete_in_parallel
 from .model import OuterModel, PushGrad
 from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, set_torch_config
 from .data import HFImageDataset
-from .train_utils import init_model, OptScheduler
-from .utils import plot_data, reset, get_time
+from .train_utils import init_model, OptScheduler, dump_args
+from .utils import plot_data, reset
 
 
 def load_data(args):
@@ -112,7 +110,7 @@ def load_model(args):
                 continue
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
             models[n].load_state_dict(checkpoint["model"][n])
-            schedulers[n].load_state_dict(checkpoint["optimizer"][n]) # TODO rename
+            schedulers[n].load_state_dict(checkpoint["optimizer"][n])
             models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
     else:
@@ -124,14 +122,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return models, schedulers
-
-def dump_args(args, root = "/notebooks/", file_name = None):
-    file_name = file_name or get_time(get_date=True)
-    if root != "/notebooks/":
-        root.mkdir(parents=True, exist_ok=True)
-    with open(Path(root) / f"{file_name}.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(args.save_args, f)
+    return models, schedulers, scalers
     
 def prep_training(dict_args, exp):
     reset(0)
@@ -181,5 +172,5 @@ def prep_training(dict_args, exp):
         torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     train_loader, val_loader, mixup_fn = load_data(args)
-    models, schedulers = load_model(args)
-    return models, schedulers, train_loader, val_loader, mixup_fn, args
+    models, schedulers, scalers = load_model(args)
+    return models, schedulers, scalers, train_loader, val_loader, mixup_fn, args

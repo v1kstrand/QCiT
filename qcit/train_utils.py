@@ -1,6 +1,10 @@
 import shutil
+from pathlib import Path
+import yaml
 import math
 import torch
+
+from .utils import get_time
 
 def init_model(model, args, print_fn=print):
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
@@ -171,3 +175,10 @@ def save_model(modules, name):
         },
         save_path,
     )
+    
+def dump_args(args, root = "/notebooks/", file_name = None):
+    file_name = file_name or get_time(get_date=True)
+    if root != "/notebooks/":
+        root.mkdir(parents=True, exist_ok=True)
+    with open(Path(root) / f"{file_name}.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(args.save_args, f)

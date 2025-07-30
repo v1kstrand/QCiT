@@ -7,8 +7,8 @@ import torch
 import comet_ml
 
 from .config import AMP_DTYPE
-from .train_utils import save_model
-from .train_prep import prep_training, dump_args
+from .train_utils import save_model, dump_args
+from .train_prep import prep_training
 from .utils import to_min, get_time
 
         
@@ -38,7 +38,7 @@ def validate(models, sched, loader, args, exp):
     exp.log_metric("General/Time Val", to_min(val_time), step=curr_epoch)
 
 def train_loop(modules, exp, magic=10):
-    models, sched, train_loader, val_loader, mixup_fn, args = modules
+    models, sched, _, train_loader, val_loader, mixup_fn, args = modules
     tracker = sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
