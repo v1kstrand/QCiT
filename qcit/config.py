@@ -53,7 +53,7 @@ def set_torch_config():
     dynamo_config = torch._dynamo.config
     dynamo_config.compiled_autograd = True
     dynamo_config.capture_scalar_outputs = False
-    dynamo_config.cache_size_limit = 64
+    dynamo_config.cache_size_limit = 128
 
     inductor_config =  torch._inductor.config
     # spend longer tuning for best Triton kernels
