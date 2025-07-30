@@ -130,7 +130,7 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         bank_size: int = 16,
-        query_t: int = 4,
+        query_t: int = 2,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -151,7 +151,7 @@ class ContextAttention(nn.Module):
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.norm_ctx = norm_layer(dim)
-        self.proj_ctx = nn.Linear(dim, 2 * dim * query_t, bias=qkv_bias)
+        self.proj_ctx = nn.Linear(dim, 2 * dim * query_t + dim, bias=qkv_bias)
 
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
@@ -161,31 +161,33 @@ class ContextAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, L, D = x.shape
+        B, L, D = x.shape # X is passed a (pre) LN before inp
         H, d = self.n_h, self.h_d
         M, N, T = self.bank_size, L - self.bank_size, self.query_t
 
-        # Project 
-        bank_tokens, inp_tokens = torch.split(x, (M, N), 1)
-        q_p, k_p, v_p = self.proj_x(inp_tokens).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4)
-        q_b = self.proj_q(bank_tokens).view(B, M, 2, H, d)
-        q1_b = q_b[:, :, 0].transpose(1, 2)
-        q2_b = q_b[:, :, 1].transpose(1, 2)
+        # Project inp seq, and reshape bank seq
+        bank_tokens, patch_tokens = torch.split(x, (M, N), 1)
+        p_qkv = self.proj_x(patch_tokens).view(B, N, 3, H, d)
+        q_p, k_p, v_p = p_qkv.permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
+        b_q = bank_tokens.view(B, M, H, d).transpose(1, 2)
 
-        # Context attention
-        ctx_attn = self.sdpa(q1_b, k_p, v_p)
-        ctx_attn = ctx_attn.transpose(1, 2).reshape(B, M, D)
+        # Let bank query the inp to get a compressed "context" representation
+        ctx_attn = self.sdpa(b_q, k_p, v_p) # [B, H, M, d]
+        ctx_attn = ctx_attn.transpose(1, 2).reshape(B, M, D) # [B, M, D]
 
-        # Context projection (to KV)
-        kv_ctx = self.proj_ctx(self.norm_ctx(ctx_attn)).view(B, M, 2, D*T)
-        k_ctx = kv_ctx[:, :, 0].reshape(B, M*T, H, d).transpose(1, 2) 
-        v_ctx = kv_ctx[:, :, 1].reshape(B, M*T, H, d).transpose(1, 2)
+        # Context projection to KV (and out for Bank Res Connect)
+        ctx = self.proj_ctx(self.norm_ctx(ctx_attn)) # [B, M, 2TD + D]
+        ctx_kv, b_out = torch.split(ctx, (2 * D * T, D), -1)
+        ctx_kv = ctx_kv.reshape(B, M*T, 2, H, d) # [B, MT, 2, H, d]
+        k_ctx = ctx_kv[:, :, 0].transpose(1, 2) # [B, H, MT, d]
+        v_ctx = ctx_kv[:, :, 1].transpose(1, 2) # [B, H, MT, d]
 
-        # Final attention (tokens attend to compressed context)
-        x_q = torch.cat([q2_b, q_p], dim=2)
-        out_attn = self.sdpa(x_q, k_ctx, v_ctx)
-        out_attn = out_attn.transpose(1, 2).reshape(B, L, D)
-        return self.out_drop(self.proj_out(out_attn))
+        # Inp seq do cross attention on the context and project the output 
+        p_attn = self.sdpa(q_p, k_ctx, v_ctx) # [B, H, N, d]
+        p_attn = p_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
+        p_out = self.out_drop(self.proj_out(p_attn)) # [B, N, D]
+        out = torch.cat([x[:, :N, :] + p_out, x[:, N:, :] + b_out], dim=1) # [B, L, D]
+        return out # Pass out to res connect -> MLP -> repeat for n blocks
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:
@@ -446,7 +448,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv7(nn.Module):
+class ContextViTv8(nn.Module):
     def __init__(
         self,
         img_size=224,

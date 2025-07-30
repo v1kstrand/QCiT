@@ -11,7 +11,7 @@ from .train_utils import save_model, dump_args
 from .train_prep import prep_training
 from .utils import to_min, get_time
 
-        
+  
 @torch.no_grad()
 def validate(model_dict, data_dict, args, exp):
     models, sched, loader = model_dict["models"], model_dict["schedulers"], data_dict["val_loader"]
@@ -39,8 +39,8 @@ def validate(model_dict, data_dict, args, exp):
     exp.log_metric("General/Time Val", to_min(val_time), step=curr_epoch)
 
 def train_loop(model_dict, data_dict, args, exp, magic=10):
-    models, sched, loader = model_dict["models"], model_dict["schedulers"], data_dict["train_loader"]
-    tracker = sched[args.opt["log"][0]]
+    models, sched = model_dict["models"], model_dict["schedulers"]
+    loader, tracker = data_dict["train_loader"], sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
     stats = {name: defaultdict(list) for name in models}

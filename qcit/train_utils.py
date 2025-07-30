@@ -175,7 +175,7 @@ def save_model(model_dict, args, file_name):
         save_path,
     )
     
-def dump_args(args, root = "/notebooks/", file_name = None):
+def dump_args(args, root = "/notebooks/", file_name=None):
     file_name = file_name or get_time(get_date=True)
     if root != "/notebooks/":
         root.mkdir(parents=True, exist_ok=True)
