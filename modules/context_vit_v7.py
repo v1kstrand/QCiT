@@ -186,7 +186,7 @@ class ContextAttention(nn.Module):
         x_q = torch.cat([q2_b, q_p], dim=2)
         out_attn = self.sdpa(x_q, k_ctx, v_ctx) 
         out_attn = out_attn.transpose(1, 2).reshape(B, L, D)
-        return self.out_drop(self.proj_out(out_attn)) 
+        return self.out_drop(self.proj_out(out_attn))
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:

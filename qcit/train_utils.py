@@ -70,6 +70,7 @@ class OptScheduler:
         self.curr_step = 1
         self.name = name
         self.exp = exp
+        self.magic = 10
         if exp is not None:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
@@ -87,9 +88,9 @@ class OptScheduler:
             wd_curr = self._set_wd_cosine(step)
         self.curr_step += 1
 
-        if self.exp is not None and step % 10 == 0:
-            self.exp.log_metric(f"General/LR {self.name}", lr_curr, step=step) # TODO rename
-            self.exp.log_metric(f"General/WD {self.name}", wd_curr, step=step)
+        if self.exp is not None and step % self.magic == 0:
+            self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
+            self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
 
     def _set_warm_up(self, step: int):
         """Linearly ramp LR from wu_start → lr_max over wu_steps."""
