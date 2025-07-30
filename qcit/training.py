@@ -13,10 +13,10 @@ from .utils import to_min, get_time
 
         
 @torch.no_grad()
-def validate(models, opt, loader, args, exp):
+def validate(models, sched, loader, args, exp):
     models.eval()
     stats, val_time = {name: defaultdict(list) for name in models}, time.perf_counter()
-    curr_epoch = opt[args.opt["log"][0]].step // args.steps_p_epoch
+    curr_epoch = sched[args.opt["log"][0]].curr_step // args.steps_p_epoch
     
     for step, data in enumerate(loader):
         print(f"Validating - Epoch: {curr_epoch} - Step: {step} / {len(loader)} [{get_time()}]")
@@ -27,19 +27,19 @@ def validate(models, opt, loader, args, exp):
 
     for name, s in stats.items():
         for k, v in s.items():
-            exp.log_metric(k, sum(v) / len(v), step=opt[name].curr_step)
+            exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step)
             if "Top-1" in k:
                 models[name].val_top1_acc = sum(v) / len(v)
     
     for name, model in models.items():
         if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
             ratio = model.val_top1_acc / model.train_top1_acc
-            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=opt[name].curr_step)
-    exp.log_metric("General/Val time", to_min(val_time), step=curr_epoch)
+            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
+    exp.log_metric("General/Time Val", to_min(val_time), step=curr_epoch)
 
 def train_loop(modules, exp, magic=10):
-    models, opt, _,  train_loader, val_loader, mixup_fn, args = modules
-    tracker = opt[args.opt["log"][0]]
+    models, sched, train_loader, val_loader, mixup_fn, args = modules
+    tracker = sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
     stats = {name: defaultdict(list) for name in models}
@@ -55,9 +55,9 @@ def train_loop(modules, exp, magic=10):
         for step, data in enumerate(train_loader, start=start_step):
             print(f"Epoch: {curr_epoch} - Step: {step} | Next Stats @ {next_stats} - Next Epoch @ {next_epoch} [{get_time()}]")
             if batch_time is not None and step % magic == 0:
-                exp.log_metric("General/Batch time", to_min(batch_time), step=step)
+                exp.log_metric("General/Time Batch", to_min(batch_time), step=step)
 
-            _ = [o() for o in opt.values()]
+            _ = [o() for o in sched.values()]
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 if mixup := args.kw["mixup_p"] >= random.random():
@@ -69,11 +69,11 @@ def train_loop(modules, exp, magic=10):
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():
-                        exp.log_metric(k, sum(v) / len(v), step=opt[name].curr_step)
+                        exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step)
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:
-                    exp.log_metric("General/Stat time", to_min(stats_time), step=step)
+                    exp.log_metric("General/Time Stat", to_min(stats_time), step=step)
                 save_model(modules, "model")
                 del stats
 
@@ -84,7 +84,7 @@ def train_loop(modules, exp, magic=10):
 
         # -- Epoch End --
         if not init_run:
-            exp.log_metric("General/Epoch time", to_min(epoch_time), step=curr_epoch)
+            exp.log_metric("General/Time Epoch", to_min(epoch_time), step=curr_epoch)
         init_run = False
 
         if args.freq["save"] == 1 or (
@@ -95,7 +95,7 @@ def train_loop(modules, exp, magic=10):
         if args.freq["eval"] == 1 or (
             curr_epoch and curr_epoch % args.freq["eval"] == 0
         ):
-            validate(models, opt, val_loader, args, exp)
+            validate(models, sched, val_loader, args, exp)
         dump_args(args, file_name="params")
 
 

@@ -81,7 +81,7 @@ def load_data(args):
 
 def load_model(args):
     models = nn.ModuleDict()
-    optimizers = {}
+    schedulers = {}
     scalers = {}
 
     for i, (name, kw) in enumerate(args.models.items()):
@@ -89,7 +89,7 @@ def load_model(args):
         params = init_model(m, args, print_fn = print if i == 0 else lambda x: None)
         opt = torch.optim.AdamW([*params.values()], fused=True)
         exp = args.exp if name in args.opt["log"] else None
-        optimizers[name] = OptScheduler(opt, args, exp=exp, name=name)
+        schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
         scalers[name] = scaler = torch.amp.GradScaler("cuda")
         m.backward = PushGrad(opt, scaler, args)
         if hasattr(m.inner.model, "init"):
@@ -112,8 +112,8 @@ def load_model(args):
                 continue
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
             models[n].load_state_dict(checkpoint["model"][n])
-            optimizers[n].load_state_dict(checkpoint["optimizer"][n])
-            models[n].backward.optimizer = optimizers[n].optimizer
+            schedulers[n].load_state_dict(checkpoint["optimizer"][n]) # TODO rename
+            models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
     else:
         print("INFO: Initializing new model")
@@ -124,7 +124,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return models, optimizers, scalers 
+    return models, schedulers
 
 def dump_args(args, root = "/notebooks/", file_name = None):
     file_name = file_name or get_time(get_date=True)
@@ -181,5 +181,5 @@ def prep_training(dict_args, exp):
         torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     train_loader, val_loader, mixup_fn = load_data(args)
-    models, opts, scalers = load_model(args)
-    return models, opts, scalers, train_loader, val_loader, mixup_fn, args
+    models, schedulers = load_model(args)
+    return models, schedulers, train_loader, val_loader, mixup_fn, args
