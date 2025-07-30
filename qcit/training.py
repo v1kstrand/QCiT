@@ -107,8 +107,8 @@ def start_training(dict_args):
         experiment_key=dict_args.get("exp_key", None),
     )
     try:
-        modules = prep_training(dict_args, exp)
-        train_loop(modules, exp)
+        model_dict, data_dict, args = prep_training(dict_args, exp)
+        train_loop(model_dict, data_dict, args, exp)
     finally:
         exp.end()
 

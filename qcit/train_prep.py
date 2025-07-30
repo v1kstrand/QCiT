@@ -174,4 +174,4 @@ def prep_training(dict_args, exp):
 
     data_dict = load_data(args)
     model_dict = load_model(args)
-    return model_dict, data_dict,  args
+    return model_dict, data_dict, args
