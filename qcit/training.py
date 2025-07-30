@@ -27,17 +27,17 @@ def validate(models, opt, loader, args, exp):
 
     for name, s in stats.items():
         for k, v in s.items():
-            exp.log_metric(k, sum(v) / len(v), step=opt[name].step)
+            exp.log_metric(k, sum(v) / len(v), step=opt[name].curr_step)
             if "Top-1" in k:
                 models[name].val_top1_acc = sum(v) / len(v)
     
     for name, model in models.items():
         if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
             ratio = model.val_top1_acc / model.train_top1_acc
-            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=opt[name].step)
+            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=opt[name].curr_step)
     exp.log_metric("General/Val time", to_min(val_time), step=curr_epoch)
 
-def train_loop(modules, exp, magic = 10):
+def train_loop(modules, exp, magic=10):
     models, opt, _,  train_loader, val_loader, mixup_fn, args = modules
     tracker = opt[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
@@ -69,7 +69,7 @@ def train_loop(modules, exp, magic = 10):
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():
-                        exp.log_metric(k, sum(v) / len(v), step=opt[name].step)
+                        exp.log_metric(k, sum(v) / len(v), step=opt[name].curr_step)
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:
