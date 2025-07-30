@@ -79,6 +79,9 @@ def load_data(args):
 
 
 def load_model(args):
+    for m in args.opt.log:
+        assert m in args.models, f"{m} in 'args.opt.log' but not in models"
+    
     models = nn.ModuleDict()
     schedulers = {}
     scalers = {}
