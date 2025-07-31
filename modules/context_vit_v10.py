@@ -149,8 +149,8 @@ class ContextAttention(nn.Module):
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
         
-        self.norm_ctx = norm_layer(dim)
-        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.norm_ctx_k = norm_layer(self.h_d)
+        self.norm_ctx_v = norm_layer(self.h_d)
 
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
@@ -168,12 +168,8 @@ class ContextAttention(nn.Module):
         bank = self.bank_norm(self.bank)
         bank_q = bank.expand(B, -1, -1).view(B, M, H, d).transpose(1, 2)
 
-        ctx_attn = self.sdpa(bank_q, k_p, v_p) # [B, H, M, d]
-        ctx_attn = ctx_attn.transpose(1, 2).reshape(B, M, D)
-        kv_ctx = self.proj_ctx(self.norm_ctx(ctx_attn)).view(B, M, 2, H, d) # # [B, MT, 2, H, d] o(2TMD^2)
-        k_ctx, v_ctx = kv_ctx[:, :, 0].transpose(1, 2), kv_ctx[:, :, 1].transpose(1, 2)  # [B, H, MT, d]
-
-        x_attn = self.sdpa(q_p, k_ctx, v_ctx) # [B, H, N, d]
+        ctx = self.sdpa(bank_q, k_p, v_p) # [B, H, M, d]
+        x_attn = self.sdpa(q_p, self.norm_ctx_k(ctx), self.norm_ctx_v(ctx)) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         x_out = self.out_drop(self.proj_out(x_attn)) # [B, N, D]
         return x_out
@@ -435,7 +431,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv9(nn.Module):
+class ContextViTv10(nn.Module):
     def __init__(
         self,
         img_size=224,
