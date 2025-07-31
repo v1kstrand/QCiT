@@ -148,10 +148,11 @@ class ContextAttention(nn.Module):
 
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.proj_q = nn.Linear(dim, dim * query_t, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
-
+        
         self.norm_ctx = norm_layer(dim)
+        self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
+        
+        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
@@ -164,16 +165,15 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape 
         M, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
 
-        q_p, k_p, v_p = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
+        x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
         Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
         
-        ctx_attn = self.sdpa(Q, k_p, v_p) # [B, H, M * T, d]
+        ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
         ctx_norm = self.norm_ctx(ctx_attn.transpose(1, 2).reshape(B, M*T, D)) # [B, M * T, D]
         ctx_k = self.proj_ctx(ctx_norm).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
         ctx_v = ctx_norm.view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
         
-        
-        x_attn = self.sdpa(q_p, ctx_k, ctx_v) # [B, H, N, d]
+        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
