@@ -130,6 +130,7 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         bank_size: int = 16,
+        query_t: int = 2,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -143,12 +144,12 @@ class ContextAttention(nn.Module):
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.bank_size = bank_size
-        self.bank = nn.Parameter(torch.zeros(1, bank_size, dim))
-        self.bank_norm = norm_layer(dim)
-        
+        self.query_t = query_t
+
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
+        self.proj_q = nn.Linear(dim, dim * query_t, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
-        
+
         self.norm_ctx_k = norm_layer(self.h_d)
         self.norm_ctx_v = norm_layer(self.h_d)
 
@@ -160,19 +161,16 @@ class ContextAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, N, D = x.shape # X is passed a (pre) LN before inp
-        M, H, d = self.bank_size, self.n_h, self.h_d
+        B, N, D = x.shape 
+        M, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
 
-        p_qkv = self.proj_x(x).view(B, N, 3, H, d)
-        q_p, k_p, v_p = p_qkv.permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
-        bank = self.bank_norm(self.bank)
-        bank_q = bank.expand(B, -1, -1).view(B, M, H, d).transpose(1, 2)
-
-        ctx = self.sdpa(bank_q, k_p, v_p) # [B, H, M, d]
-        x_attn = self.sdpa(q_p, ctx, ctx) # [B, H, N, d]
+        q_p, k_p, v_p = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
+        Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
+        
+        ctx = self.sdpa(Q, k_p, v_p) # [B, H, M * T, d]
+        x_attn = self.sdpa(q_p, self.norm_ctx_k(ctx), self.norm_ctx_v(ctx)) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        x_out = self.out_drop(self.proj_out(x_attn)) # [B, N, D]
-        return x_out
+        return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
         if threshold is None:
@@ -231,6 +229,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
+        query_t=1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -244,6 +243,7 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
+            query_t=query_t
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -431,7 +431,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv10(nn.Module):
+class ContextViTv8(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -452,6 +452,7 @@ class ContextViTv10(nn.Module):
         token_drop=0,
         n_registers=0,
         bank_size=64,
+        query_t=1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -482,6 +483,7 @@ class ContextViTv10(nn.Module):
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
+        self.bank_size = bank_size
         self.return_cls_only = return_cls_only
 
         self.patch_embed = embed_layer(
@@ -492,7 +494,8 @@ class ContextViTv10(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        num_pos_emb = 1 + self.n_registers + self.n_patches 
+        self.tok_bank = nn.Parameter(torch.zeros(1, bank_size, embed_dim))
+        num_pos_emb = 1 + self.n_registers + self.n_patches + bank_size
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -515,6 +518,7 @@ class ContextViTv10(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 bank_size=bank_size,
+                query_t=query_t,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
             )
@@ -527,6 +531,7 @@ class ContextViTv10(nn.Module):
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
+        nn.init.normal_(self.tok_bank, std=1e-6)
         nn.init.normal_(self.tok_cls, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
@@ -535,7 +540,8 @@ class ContextViTv10(nn.Module):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
             cls_token = self.tok_cls.expand(x.size(0), -1, -1)
-            x = torch.cat((cls_token, x), dim=1) + self.tok_pos_emb
+            tok_bank = self.tok_bank.expand(x.size(0), -1, -1)
+            x = torch.cat((tok_bank, cls_token, x), dim=1) + self.tok_pos_emb
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
@@ -543,7 +549,7 @@ class ContextViTv10(nn.Module):
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
-        patch_idx = 1 + self.n_registers 
+        patch_idx = self.bank_size + 1 + self.n_registers 
         non_patches, patches = x[:, :patch_idx, :], x[:, patch_idx:, :]
         num_keep = int((1 - self.p_token_drop) * self.n_patches)
         r = torch.rand(x.size(0), self.n_patches, device=x.device)
@@ -557,7 +563,7 @@ class ContextViTv10(nn.Module):
         for blk in self.blocks:
             x = blk(x)
         with torch.profiler.record_function("Final Norm"):
-            out = self.norm(x)
+            out = self.norm(x[:, self.bank_size:, :])
         return out[:, 0, :] if self.return_cls_only else out
 
 
