@@ -12,6 +12,7 @@ from modules.context_vit_v8 import ContextViTv8
 from modules.context_vit_v9 import ContextViTv9
 from modules.context_vit_v10 import ContextViTv10
 from modules.context_vit_v12 import ContextViTv12
+from modules.context_vit_v13 import ContextViTv13
 
 from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
@@ -28,6 +29,7 @@ def get_arc(arc):
             "citv9" : ContextViTv9,
             "citv10" : ContextViTv10,
             "citv12" : ContextViTv12,
+            "citv13" : ContextViTv13,
             }[arc]
             
 
