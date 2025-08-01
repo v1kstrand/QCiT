@@ -185,6 +185,10 @@ class ContextAttention(nn.Module):
         ctx_k = self.proj_ctx(ctx_norm).view(B, Gc * Mq, H // Gc, d).transpose(1, 2) # [B, H/G, GMT, d]
         ctx_v = ctx_norm.view(B, Gc * Mq, H // Gc, d).transpose(1, 2) # [B, H/G, GMT, d]
         
+        if self.ctx_grouping != 1:
+            ctx_k = ctx_k.repeat_interleave(Gc, 1)
+            ctx_v = ctx_v.repeat_interleave(Gc, 1)
+            
         x_attn = self.sdpa(x_q, ctx_k, ctx_v, gqa = True) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
