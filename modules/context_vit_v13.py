@@ -131,6 +131,8 @@ class ContextAttention(nn.Module):
         dim: int,
         bank_size: int = 16,
         query_t: int = 2,
+        ctx_grouping: int = 1,
+        query_grouping: int = 1,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -145,6 +147,10 @@ class ContextAttention(nn.Module):
         self.h_d = dim // num_heads
         self.bank_size = bank_size
         self.query_t = query_t
+        self.query_grouping = query_grouping
+        self.ctx_grouping = ctx_grouping
+        assert num_heads % ctx_grouping == 0, f"num_heads % ctx_grouping != 0"
+        assert num_heads % query_grouping == 0, f"num_heads % ctx_grouping != 0"
 
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.proj_q = nn.Linear(dim, dim * query_t, bias=qkv_bias)
@@ -164,25 +170,33 @@ class ContextAttention(nn.Module):
     def _forward(self, x):
         B, N, D = x.shape 
         M, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
+        Gc, Gq = self.ctx_grouping, self.query_grouping
 
         x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
-        Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
+        Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, MT, d]
         
+        Mq = M * T # Numer of Q after expantion
+        if self.query_grouping != 1:
+            Mq = M * T * Gq # Numer of Q after expantion and grouping 
+            Q = Q.reshape(B, H//Gq, Mq, d).repeat_interleave(Gq, 1) # B, H, GN, d
+            
         ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
-        ctx_norm = self.norm_ctx(ctx_attn.transpose(1, 2).reshape(B, M*T, D)) # [B, M * T, D]
-        ctx_k = self.proj_ctx(ctx_norm).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
-        ctx_v = ctx_norm.view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
+        ctx_norm = self.norm_ctx(ctx_attn.transpose(1, 2).reshape(B, M*T *Gq, D)) # [B, MT, D]
+        ctx_k = self.proj_ctx(ctx_norm).view(B, Gc * Mq, H // Gc, d).transpose(1, 2) # [B, H/G, GMT, d]
+        ctx_v = ctx_norm.view(B, Gc * Mq, H // Gc, d).transpose(1, 2) # [B, H/G, GMT, d]
         
-        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
+        x_attn = self.sdpa(x_q, ctx_k, ctx_v, gqa = True) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
+        forw_fn = self._forward
+        
         if threshold is None:
             print(
                 "Warning: SDP kernel threshold is set to None, using default forward method"
             )
-            return self._forward(x)
+            return forw_fn(x)
 
         if x.size(1) > threshold:
             sdp_kernel = SDPBackend.FLASH_ATTENTION
@@ -190,7 +204,7 @@ class ContextAttention(nn.Module):
             sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
 
         with torch.nn.attention.sdpa_kernel(sdp_kernel):
-            return self._forward(x)
+            return forw_fn(x)
 
 
 # # Block
@@ -235,6 +249,8 @@ class Block(nn.Module):
         flash_mlp: bool = False,
         bank_size=64,
         query_t=1,
+        ctx_grouping=1,
+        query_grouping=1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -248,7 +264,9 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
-            query_t=query_t
+            query_t=query_t,
+            query_grouping=query_grouping,
+            ctx_grouping=ctx_grouping
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -436,7 +454,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv12(nn.Module):
+class ContextViTv14(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -458,6 +476,8 @@ class ContextViTv12(nn.Module):
         n_registers=0,
         bank_size=64,
         query_t=1,
+        ctx_grouping=1,
+        query_grouping=1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -525,6 +545,8 @@ class ContextViTv12(nn.Module):
                 bank_size=bank_size,
                 query_t=query_t,
                 flash_mlp=flash_mlp,
+                ctx_grouping=ctx_grouping,
+                query_grouping=query_grouping,
                 sdp_threshold=sdp_threshold,
             )
             for i in range(depth)
