@@ -1,10 +1,11 @@
 import time
-import inspect
+from inspect import signature
 import torch
 from torch import nn
 import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
+from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v5 import ContextViTv5
 from modules.context_vit_v6 import ContextViTv6
 from modules.context_vit_v7 import ContextViTv7
@@ -14,7 +15,6 @@ from modules.context_vit_v10 import ContextViTv10
 from modules.context_vit_v12 import ContextViTv12
 from modules.context_vit_v13 import ContextViTv13
 
-from modules.vit import VisionTransformer as ViT
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min
@@ -34,10 +34,10 @@ def get_arc(arc):
             
 
 class InnerModel(nn.Module):
-    def __init__(self, args, kw):
+    def __init__(self, args, outer):
         super().__init__()
-        arc = get_arc(kw["arc"]) 
-        self.model = get_encoder(arc, args, kw)
+        arc = get_arc(outer.kw["arc"]) 
+        self.model = get_encoder(arc, args, outer)
         self.clsf_out = nn.Linear(args.vkw["d"], NUM_CLASSES)
         self.criterion = SoftTargetCrossEntropy()
         self.ls = args.kw["label_smoothing"]
@@ -54,9 +54,9 @@ class OuterModel(nn.Module):
     def __init__(self, args, name, kw):
         super().__init__()
         self.args = args
-        self.name = kw["name"] = name
+        self.name = name
         self.kw = kw
-        self.inner = InnerModel(args, kw)
+        self.inner = InnerModel(self)
         self.last_top1 = self.backward = None
 
     def compile_model(self):
@@ -120,10 +120,11 @@ class PushGrad(nn.Module):
     def zero(self):
         self.optimizer.zero_grad(set_to_none=True)
 
-def get_encoder(module, args, kw):
+def get_encoder(module, args, model):
+    init_params, kw = signature(module).parameters, model.kw
     for k, v in kw.get("unique", {}).items():
-        assert k in inspect.signature(module).parameters, f"{k} not found in {kw['name']}"
-        print(f"INFO: Assigning ({k} : {v}) to {kw['name']}")
+        assert k in init_params, f"{k} not found in {model.name}"
+        print(f"INFO: Assigning ({k} : {v}) to {model.name}")
         
     return module(
             patch_size=args.vkw["patch_size"],

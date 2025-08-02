@@ -141,16 +141,15 @@ class ContextAttention(nn.Module):
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        for k in ("dim", "ctx_grouping", "query_grouping"):
+            assert locals()[k] % num_heads == 0, f"{k} must be divisible by num_heads"
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.bank_size = bank_size
         self.query_t = query_t
         self.query_grouping = query_grouping
-        self.ctx_grouping = ctx_grouping
-        assert num_heads % ctx_grouping == 0, f"num_heads % ctx_grouping != 0"
-        assert num_heads % query_grouping == 0, f"num_heads % ctx_grouping != 0"
+        self.ctx_grouping = ctx_grouping 
 
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.proj_q = nn.Linear(dim, dim * query_t, bias=qkv_bias)
@@ -175,9 +174,9 @@ class ContextAttention(nn.Module):
         x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
         Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, MT, d]
         
-        Mq = M * T # Numer of Q after expantion
+        Mq = M * T # Number of Q after expansion
         if self.query_grouping != 1:
-            Mq = M * T * Gq # Numer of Q after expantion and grouping 
+            Mq = M * T * Gq # Number of Q after expansion and grouping
             Q = Q.reshape(B, H//Gq, Mq, d).repeat_interleave(Gq, 1) # B, H, GN, d
             
         ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
