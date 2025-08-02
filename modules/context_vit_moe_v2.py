@@ -159,9 +159,9 @@ class ContextAttention(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
-    def sdpa(self, q, k, v, gqa=False):
+    def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, enable_gqa=gqa)
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
         B, N, D = x.shape 
@@ -169,7 +169,7 @@ class ContextAttention(nn.Module):
 
         x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
         a, b = torch.chunk(self.cls_to_ab(x[:, 0]).unsqueeze(1), 2, -1)
-        bank = F.normalize(self.bank, -1).expand(B, -1, -1)
+        bank = F.normalize(self.bank, dim=-1).expand(B, -1, -1)
         Q = (a * bank + b).view(B, M, H, d).transpose(1, 2)
         
         ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
@@ -177,7 +177,7 @@ class ContextAttention(nn.Module):
         ctx_k = self.proj_ctx(ctx_norm).view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
         ctx_v = ctx_norm.view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
             
-        x_attn = self.sdpa(x_q, ctx_k, ctx_v, gqa = True) # [B, H, N, d]
+        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     

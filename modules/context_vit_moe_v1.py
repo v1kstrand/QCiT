@@ -139,7 +139,7 @@ class ContextAttention(nn.Module):
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
-        assert dim % num_heads == 0, f"dim must be divisible by num_heads"
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
@@ -159,9 +159,9 @@ class ContextAttention(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
-    def sdpa(self, q, k, v, gqa=False):
+    def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, enable_gqa=gqa)
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
         B, N, D = x.shape 
@@ -179,7 +179,7 @@ class ContextAttention(nn.Module):
         ctx_k = self.proj_ctx(ctx_norm).view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
         ctx_v = ctx_norm.view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
             
-        x_attn = self.sdpa(x_q, ctx_k, ctx_v, gqa = True) # [B, H, N, d]
+        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
