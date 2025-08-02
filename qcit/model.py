@@ -60,7 +60,7 @@ class OuterModel(nn.Module):
         self.args = args
         self.name = name
         self.kw = kw
-        self.inner = InnerModel(self)
+        self.inner = InnerModel(args, self)
         self.last_top1 = self.backward = None
 
     def compile_model(self):
