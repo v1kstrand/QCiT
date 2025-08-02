@@ -14,6 +14,8 @@ from modules.context_vit_v9 import ContextViTv9
 from modules.context_vit_v10 import ContextViTv10
 from modules.context_vit_v12 import ContextViTv12
 from modules.context_vit_v13 import ContextViTv13
+from modules.context_vit_moe_v1 import ContextMoeViTv1
+from modules.context_vit_moe_v2 import ContextMoeViTv2
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -30,6 +32,8 @@ def get_arc(arc):
             "citv10" : ContextViTv10,
             "citv12" : ContextViTv12,
             "citv13" : ContextViTv13,
+            "moev1" : ContextMoeViTv1,
+            "moev2" : ContextMoeViTv2,
             }[arc]
             
 
