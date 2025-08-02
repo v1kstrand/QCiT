@@ -110,27 +110,13 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-class LinearGroupedLowRank(nn.Module): 
-    def __init__(self, d, t): 
-        super().__init__()
-        self.dense = nn.Linear(d, d)
-        self.act = nn.GELU() 
-        self.grouped = nn.Conv1d(d, t*d, 1, groups=t)  # [B, d, N] -> [B, t*d, N]
-
-    def forward(self, x):    # x: [B, N, d]
-        x = self.dense(x)   # [B, N, d]
-        x = self.act(x)     # [B, N, d]
-        x = x.transpose(1, 2)  # [B, d, N]
-        x = self.grouped(x)    # [B, t*d, N]
-        x = x.transpose(2, 1)  # [B, N, t*d]
-        return x
-
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        bank_size: int = 16,
-        bank_depth = 1,
+        num_tokens,
+        query_t: int = 1,
+        bank_size: int = 4,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -140,20 +126,19 @@ class ContextAttention(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.bank_size = bank_size
-        self.bank_depth = bank_depth
-        self.bank = nn.Parameter(torch.randn(1, bank_depth, bank_size, num_heads, self.h_d))
+        self.query_t = query_t
+        self.bank = nn.Parameter(torch.randn(1, bank_size, num_tokens))
         
-        self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-        self.cls_to_w = nn.Sequential(nn.Linear(dim, dim),
-                                      nn.GELU(),
-                                      nn.Linear(dim, bank_depth * num_heads))
-        self.bank_norm = norm_layer(dim) 
+        self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.proj_Q = nn.Linear(dim, num_tokens * query_t, bias=proj_bias)
+        
         self.norm_ctx = norm_layer(dim)
-        self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_ctx = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
@@ -164,21 +149,18 @@ class ContextAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, N, D = x.shape 
-        K, M, H, d = self.bank_depth, self.bank_size, self.n_h, self.h_d
+        B, N, D = x.shape # pre normed x
+        K, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
 
-        x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
-        w = torch.softmax(self.cls_to_w(x[:, 0]).view(B, K, H), dim=1)
-        w = w.view(B, K, 1, H, 1)
-        bank = self.bank.expand(B, -1, -1, -1, -1)
-        weighted_bank = (bank * w).sum(dim=1).view(B, M, D)
-        Q = self.bank_norm(weighted_bank).view(B, M, H, d).transpose(1, 2)
+        x_q, x_v = torch.chunk(self.proj_x(x), 2, -1) # 2[B, H, N, d]
+        w_q = F.softmax(self.bank, -1).expand(B, -1, -1) # [B, K, N]
+        Q = torch.bmm(w_q, x) # B, K, D
+        w_ctx = F.softmax(self.proj_Q(Q).reshape(B, K * T, N), -1) # B, TK, N
         
-        ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
-        ctx_norm = self.norm_ctx(ctx_attn.transpose(1, 2).reshape(B, M, D)) # [B, MT, D]
-        ctx_k = self.proj_ctx(ctx_norm).view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
-        ctx_v = ctx_norm.view(B, M, H, d).transpose(1, 2) # [B, H/G, GMT, d]
-            
+        ctx = self.norm_ctx(torch.bmm(w_ctx, x_v)) # B, TK, D
+        ctx_k, ctx_v = self.proj_ctx(ctx).view(B, K * T, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, TK, d]
+        
+        x_q = x_q.view(B, N, H, d).transpose(1, 2)
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
@@ -230,6 +212,7 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
+        num_tokens,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -242,7 +225,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        bank_depth=1,
+        query_t=1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -256,7 +239,8 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
-            bank_depth=bank_depth
+            query_t=query_t,
+            num_tokens=num_tokens
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -444,7 +428,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextMoeViTv1(nn.Module):
+class ContextViTv14(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -464,8 +448,8 @@ class ContextMoeViTv1(nn.Module):
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        bank_size=64,
-        bank_depth=1,
+        bank_size=16,
+        query_t=1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -508,8 +492,8 @@ class ContextMoeViTv1(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        n_tokens =  1 + self.n_registers + self.n_patches
-        self.tok_pos_emb = nn.Parameter(torch.zeros(1, n_tokens, embed_dim))
+        num_tokens = 1 + self.n_registers + self.n_patches
+        self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
@@ -531,10 +515,10 @@ class ContextMoeViTv1(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 bank_size=bank_size,
-                bank_depth=bank_depth,
+                query_t=query_t,
+                num_tokens= num_tokens,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
-                
             )
             for i in range(depth)
         ]
