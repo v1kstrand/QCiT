@@ -189,13 +189,13 @@ def profile_model(model_dict, x, y, args):
     profile_dir = args.exp_dir / "profiling"
     profile_dir.mkdir(parents=True, exist_ok=True)
     print("INFO: Performing Profiling")
-    
+
     org_states = {
         "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
         "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
         "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
     }
-    
+
     def run_profiling(model, file_dir):
         print(f"INFO: Profiling {name}")
         file_name = get_time(get_date=True) + ".json"
@@ -206,10 +206,10 @@ def profile_model(model_dict, x, y, args):
                 wait=5,      # Number of steps to skip (do nothing)
                 warmup=5,    # Number of warmup steps (start recording, but don't save trace)
                 active=10,    # Number of steps to actually record and save traces
-                repeat=1     # Repeat the cycle this many times (1=once)
+                repeat=0     # Repeat the cycle this many times (1=once)
             ),
             record_shapes=True,
-            with_stack=False,
+            with_stack=True,
             profile_memory=True,
             with_flops=True,
             with_modules=True
