@@ -1,6 +1,5 @@
 import shutil
 from pathlib import Path
-from collections import defaultdict
 import yaml
 import math
 import torch
@@ -196,7 +195,6 @@ def profile_model(model_dict, x, y, args):
         "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
     }
 
-
     def run_profiling(model, model_name):
         print(f"INFO: Profiling {name}")
         file_name = f"{get_time(get_date=True)}__{model_name}"
@@ -239,6 +237,3 @@ def profile_model(model_dict, x, y, args):
         models[n].backward.scaler.load_state_dict(org_states["scaler"][n])
         
     args.profile_models = False
-    
-        
-        
