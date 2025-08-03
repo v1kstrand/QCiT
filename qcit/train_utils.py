@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from collections import defaultdict
 import yaml
 import math
 import torch
@@ -217,7 +218,7 @@ def profile_model(model_dict, x, y, args):
         prof = prof_conf(name)
         with prof:
             for _ in range(20):
-                model.forward(x, y, {}, mixup=True)
+                model.forward(x, y, defaultdict(list), mixup=True)
                 prof.step()
     
     schedulers = model_dict["schedulers"]
