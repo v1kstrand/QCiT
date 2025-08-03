@@ -209,7 +209,7 @@ def profile_model(model_dict, x, y, args):
                 repeat=0     # Repeat the cycle this many times (1=once)
             ),
             record_shapes=True,
-            with_stack=True,
+            with_stack=False,
             profile_memory=True,
             with_flops=True,
             with_modules=True
