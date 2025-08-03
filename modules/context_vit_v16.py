@@ -115,14 +115,12 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         num_tokens,
-        query_t: int = 1,
         bank_size: int = 4,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        mlp_q_exp: int = 0,
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
@@ -132,17 +130,9 @@ class ContextAttention(nn.Module):
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.bank_size = bank_size
-        self.query_t = query_t
-        self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, self.h_d))
+        self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, num_tokens))
         
         self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
-        if mlp_q_exp == 0:
-            self.proj_Q = nn.Linear(self.h_d, num_tokens * query_t, bias=False)
-        else:
-            self.proj_Q = nn.Sequential(nn.Linear(self.h_d, self.h_d * mlp_q_exp, bias=False),
-                                        nn.GELU(),
-                                        nn.Linear(self.h_d * mlp_q_exp, num_tokens * query_t, bias=False))
-        
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
@@ -155,15 +145,13 @@ class ContextAttention(nn.Module):
 
     def _forward(self, x):
         B, N, D = x.shape # pre normed x
-        K, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
+        K, H, d = self.bank_size, self.n_h, self.h_d
 
         x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
-        bank_q = self.bank.expand(B, -1, -1, -1) # [B, H, K, d]
-        Q = self.sdpa(bank_q, x_q, x_v) # [B, H, K, d]
-        w_ctx = F.softmax(self.proj_Q(Q).view(B, H, K * T, N), -1) # B, H, KT, N
-        ctx_v = (w_ctx @ x_v) # B, H, KT, D
-        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K * T, D))
-        ctx_k = ctx_k.view(B, K * T, H, d).transpose(1, 2) # [B, H, TK, d]
+        W = F.softmax(self.bank, -1).expand(B, -1, -1, -1) # [B, H, K, N]
+        ctx_v = (W @ x_v) # B, H, K, D
+        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D))
+        ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, TK, d]
         
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
