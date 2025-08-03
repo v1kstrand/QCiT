@@ -550,7 +550,7 @@ class ContextViTv15(nn.Module):
             x = self.token_drop(x)
         return x
 
-    def token_drop(self, x):
+    def token_drop(self, x): # TODO No grad
         if not self.p_token_drop or not self.training:
             return x
         patch_idx = 1 + self.n_registers 

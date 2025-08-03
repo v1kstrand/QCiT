@@ -154,7 +154,7 @@ class ContextAttention(nn.Module):
 
         x_q, x_v = torch.chunk(self.proj_x(x), 2, -1) # 2[B, H, N, d] 
         w_q = F.softmax(self.bank, -1).expand(B, -1, -1) # [B, K, N]
-        Q = torch.bmm(w_q, x) # B, K, D +KD
+        Q = torch.bmm(w_q, x) # B, K, D 
         w_ctx = F.softmax(self.proj_Q(Q).reshape(B, K * T, N), -1) # B, TK, N 
         
         ctx = self.norm_ctx(torch.bmm(w_ctx, x_v)) # B, TK, D 
