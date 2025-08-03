@@ -217,8 +217,6 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        query_t=1,
-        mlp_q_exp=0,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -232,9 +230,7 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             bank_size=bank_size,
-            query_t=query_t,
             num_tokens=num_tokens,
-            mlp_q_exp=mlp_q_exp,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -422,7 +418,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv15(nn.Module):
+class ContextViTv16(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -443,8 +439,6 @@ class ContextViTv15(nn.Module):
         token_drop=0,
         n_registers=0,
         bank_size=16,
-        query_t=1,
-        mlp_q_exp=0,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -510,8 +504,6 @@ class ContextViTv15(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 bank_size=bank_size,
-                query_t=query_t,
-                mlp_q_exp=mlp_q_exp,
                 num_tokens= num_tokens,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
