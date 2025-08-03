@@ -85,7 +85,6 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 
             if args.profile_models and mixup:
                 profile_model(model_dict, imgs, labels, args)
-                assert False, "done"
                     
             batch_time = time.perf_counter()
 
