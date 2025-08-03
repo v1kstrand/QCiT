@@ -116,13 +116,13 @@ class ContextAttention(nn.Module):
         dim: int,
         num_tokens,
         bank_size: int = 4,
+        bank_depth = 4,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
         norm_layer=nn.LayerNorm,
-        mlp_w_exp=0
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -131,16 +131,14 @@ class ContextAttention(nn.Module):
         self.n_h = num_heads
         self.h_d = dim // num_heads
         self.bank_size = bank_size
-        self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, num_tokens))
+        self.bank_depth = bank_depth
+        self.bank = nn.Parameter(torch.randn(1, bank_depth, num_heads, bank_size, num_tokens))
+        
+        self.cls_to_w = nn.Sequential(nn.Linear(dim, dim * 2),
+                                      nn.GELU(),
+                                      nn.Linear(dim * 2, bank_depth))
         
         self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
-        if mlp_w_exp == 0:
-            self.proj_W = nn.Linear(self.h_d, num_tokens, bias=False)
-        else:
-            self.proj_W = nn.Sequential(nn.Linear(self.h_d, self.h_d * mlp_w_exp, bias=False),
-                                        nn.GELU(),
-                                        nn.Linear(self.h_d * mlp_w_exp, num_tokens, bias=False))
-            
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
@@ -152,12 +150,15 @@ class ContextAttention(nn.Module):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, N, D = x.shape # pre normed x (and shuffled)
-        K, H, d = self.bank_size, self.n_h, self.h_d
+        B, N, D = x.shape # pre normed x
+        K, T, H, d = self.bank_size, self.bank_depth, self.n_h, self.h_d
         
         x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
-        W = F.softmax(self.proj_W(x_v[:, :, :self.bank_size]), -1) # [B, H, K, N]
         
+        w_b = torch.softmax(self.cls_to_w(x[:, 0]).view(B, T), dim=1)
+        w_b = w_b.view(B, T, 1, 1, 1)
+        bank = (self.bank * w_b).sum(dim=1).view(B, H, K, N)
+        W = F.softmax(bank, -1)
         ctx_v = W @ x_v # B, H, K, D
         ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # B, K, D
         ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, K, d]
@@ -226,7 +227,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        mlp_w_exp=0,
+        bank_depth=1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -241,7 +242,7 @@ class Block(nn.Module):
             proj_drop=drop,
             bank_size=bank_size,
             num_tokens=num_tokens,
-            mlp_w_exp=mlp_w_exp
+            bank_depth=bank_depth
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -429,7 +430,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv17(nn.Module):
+class ContextViTv18(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -450,7 +451,7 @@ class ContextViTv17(nn.Module):
         token_drop=0,
         n_registers=0,
         bank_size=16,
-        mlp_w_exp=0,
+        bank_depth=1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -517,9 +518,9 @@ class ContextViTv17(nn.Module):
                 layerscale=layerscale,
                 bank_size=bank_size,
                 num_tokens= num_tokens,
-                mlp_w_exp=mlp_w_exp,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
+                bank_depth=bank_depth
             )
             for i in range(depth)
         ]
@@ -536,7 +537,6 @@ class ContextViTv17(nn.Module):
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
-            x = self.shuffle_patches(x)
         with torch.profiler.record_function("prepare Tokens"):
             cls_token = self.tok_cls.expand(x.size(0), -1, -1)
             x = torch.cat((cls_token, x), dim=1) + self.tok_pos_emb
