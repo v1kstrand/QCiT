@@ -198,7 +198,7 @@ def profile_model(model_dict, x, y, args):
 
     def run_profiling(model, file_dir):
         print(f"INFO: Profiling {name}")
-        file_name = get_time(get_date=True) + ".json"
+        file_name = file_dir + get_time(get_date=True) + ".json"
         profile_path = profile_dir / file_dir / file_name
         prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
