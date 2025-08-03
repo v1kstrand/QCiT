@@ -230,8 +230,7 @@ def profile_model(model_dict, x, y, args):
     for name, model in models.items():
         reset(0)
         run_profiling(model, name)
-        
-    
+
     schedulers = model_dict["schedulers"]
     for n in models:
         models[n].load_state_dict(org_states["model"][n])
