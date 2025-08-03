@@ -544,10 +544,15 @@ class ContextViTv17(nn.Module):
         return x
     
     def shuffle_patches(self, x):
-        N = x.size(1)
-        idx = torch.randperm(N, device=x.device)
-        x_shuffled = x[:, idx, :]
-        return x_shuffled
+        B, N, D = x.size()
+        perms = torch.argsort(
+            torch.rand(B, N, device=x.device),
+            dim=1
+        )  
+
+        batch_idx = torch.arange(B, device=x.device).unsqueeze(1)  # [B, 1]
+        x_shuf = x[batch_idx, perms]  # [B, N, D]
+        return x_shuf
 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
