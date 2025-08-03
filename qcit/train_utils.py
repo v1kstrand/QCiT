@@ -215,6 +215,7 @@ def profile_model(model_dict, x, y, args):
     
     models = model_dict["models"].cuda().train()
     for name, model in models.items():
+        print(f"INFO: Profiling {name}")
         prof = prof_conf(name)
         with prof:
             for _ in range(20):
