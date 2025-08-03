@@ -228,7 +228,9 @@ def profile_model(model_dict, x, y, args):
     
     models = model_dict["models"].cuda().train()
     for name, model in models.items():
+        reset(0)
         run_profiling(model, name)
+        
     
     schedulers = model_dict["schedulers"]
     for n in models:
@@ -238,6 +240,6 @@ def profile_model(model_dict, x, y, args):
         models[n].backward.scaler.load_state_dict(org_states["scaler"][n])
         
     args.profile_models = False
-    reset(0)
+    
         
         
