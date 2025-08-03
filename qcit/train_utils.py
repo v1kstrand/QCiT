@@ -190,6 +190,12 @@ def profile_model(model_dict, x, y, args):
     profile_dir.mkdir(parents=True, exist_ok=True)
     print("INFO: Performing Profiling")
     
+    org_states = {
+        "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
+        "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
+        "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
+    }
+    
     def run_profiling(model, file_name):
         print(f"INFO: Profiling {name}")
         profile_path = profile_dir / file_name
@@ -210,14 +216,10 @@ def profile_model(model_dict, x, y, args):
         )
         with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
             for _ in range(20):
+                torch.cuda.synchronize() 
                 model.forward(x, y, defaultdict(list), mixup=True)
+                torch.cuda.synchronize() 
                 prof.step()
-    
-    org_states = {
-            "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
-            "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
-            "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
-        }
     
     models = model_dict["models"].cuda().train()
     for name, model in models.items():
