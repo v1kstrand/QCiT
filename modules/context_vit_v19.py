@@ -131,11 +131,11 @@ class ContextAttention(nn.Module):
         self.bank_size = bank_size
         self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, num_tokens))
         
+        self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.cls_to_w = nn.Sequential(nn.Linear(dim, dim * 2),
                                       nn.GELU(),
                                       nn.Linear(dim * 2, self.n_h * num_tokens))
         
-        self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
