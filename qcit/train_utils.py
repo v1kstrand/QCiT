@@ -3,8 +3,9 @@ from pathlib import Path
 import yaml
 import math
 import torch
+import torch.profiler
 
-from .utils import get_time
+from .utils import get_time, reset
 
 def init_model(model, args, print_fn=print):
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
@@ -181,3 +182,52 @@ def dump_args(args, root = "/notebooks/", file_name=None):
         root.mkdir(parents=True, exist_ok=True)
     with open(Path(root) / f"{file_name}.yaml", "w", encoding="utf-8") as f:
         yaml.dump(args.save_args, f)
+        
+def profile_model(model_dict, x, y, args):
+    profile_dir = args.exp_dir / "profiling"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    print("INFO: Performing Profiling")
+    
+    def prof_conf(file_name):
+        profile_path = profile_dir / file_name
+        return torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=5,      # Number of steps to skip (do nothing)
+                warmup=5,    # Number of warmup steps (start recording, but don't save trace)
+                active=10,    # Number of steps to actually record and save traces
+                repeat=1     # Repeat the cycle this many times (1=once)
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
+            record_shapes=True,
+            with_stack=True,
+            profile_memory=True,
+            with_flops=True,
+            with_modules=True
+        )
+    
+    org_states = {
+            "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
+            "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
+            "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
+        }
+    
+    models = model_dict["models"].cuda().train()
+    for name, model in models.items():
+        prof = prof_conf(name)
+        with prof:
+            for _ in range(20):
+                model.forward(x, y, {})
+                prof.step()
+    
+    schedulers = model_dict["schedulers"]
+    for n in models:
+        models[n].load_state_dict(org_states["model"][n])
+        schedulers[n].load_state_dict(org_states["optimizer"][n])
+        models[n].backward.optimizer = schedulers[n].optimizer
+        models[n].backward.scaler.load_state_dict(org_states["scaler"][n])
+        
+    args.profile_models = False
+    reset(0)
+        
+        

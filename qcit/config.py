@@ -126,6 +126,7 @@ def get_args():
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--freq", type=dict, default={})
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--profile_models", action="store_true")
     
     # Exp
     parser.add_argument("--exp_root", type=str, default="/notebooks/runs/exp")

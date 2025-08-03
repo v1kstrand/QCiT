@@ -7,7 +7,7 @@ import torch
 import comet_ml
 
 from .config import AMP_DTYPE
-from .train_utils import save_model, dump_args
+from .train_utils import save_model, dump_args, profile_model
 from .train_prep import prep_training
 from .utils import to_min, get_time
 
@@ -63,6 +63,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 imgs, labels = map(lambda d: d.cuda(non_blocking=True), data)
                 if mixup := args.kw["mixup_p"] >= random.random():
                     imgs, labels = data_dict["mixup"](imgs, labels)
+                                        
                 time_it = step % args.freq["time_it"] if step > start_step + magic else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
@@ -81,6 +82,11 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 stats_time = time.perf_counter()
                 stats = {name: defaultdict(list) for name in models}
                 next_stats = tracker.curr_step + args.freq["stats"]
+                
+            if args.profile_models:
+                profile_model(model_dict, imgs, labels, args)
+                assert False, "done"
+                    
             batch_time = time.perf_counter()
 
         # -- Epoch End --
@@ -98,6 +104,8 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
         ):
             validate(model_dict, data_dict, args, exp)
         dump_args(args, file_name="params")
+        
+        
 
 
 def start_training(dict_args):
