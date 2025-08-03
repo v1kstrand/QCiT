@@ -218,7 +218,7 @@ def profile_model(model_dict, x, y, args):
         with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
             for _ in range(20):
                 torch.cuda.synchronize()
-                model.forward(x, y, defaultdict(list), mixup=True)
+                model.forward(x, y, None, mixup=True, profiling=True)
                 torch.cuda.synchronize()
                 prof.step()
         
