@@ -122,7 +122,7 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        mlp_q_exp: int = -1,
+        mlp_q_exp: int = 0,
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
@@ -136,7 +136,7 @@ class ContextAttention(nn.Module):
         self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, self.h_d))
         
         self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
-        if mlp_q_exp == -1:
+        if mlp_q_exp == 0:
             self.proj_Q = nn.Linear(self.h_d, num_tokens * query_t, bias=False)
         else:
             self.proj_Q = nn.Sequential(nn.Linear(self.h_d, self.h_d * mlp_q_exp, bias=False),
@@ -230,7 +230,7 @@ class Block(nn.Module):
         flash_mlp: bool = False,
         bank_size=64,
         query_t=1,
-        mlp_q_exp=-1,
+        mlp_q_exp=0,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -456,7 +456,7 @@ class ContextViTv15(nn.Module):
         n_registers=0,
         bank_size=16,
         query_t=1,
-        mlp_q_exp=-1,
+        mlp_q_exp=0,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
