@@ -468,7 +468,7 @@ class ContextViTv16(nn.Module):
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
-        self.n_registers = bank_size - 1
+        self.n_registers = n_registers
         self.bank_size = bank_size
         self.return_cls_only = return_cls_only
         _ = n_registers
