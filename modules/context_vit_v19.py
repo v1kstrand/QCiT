@@ -134,7 +134,7 @@ class ContextAttention(nn.Module):
         
         self.cls_to_w = nn.Sequential(nn.Linear(dim, dim * 2),
                                       nn.GELU(),
-                                      nn.Linear(dim * 2, dim))
+                                      nn.Linear(dim * 2, self.n_h * num_tokens))
         
         self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
@@ -149,10 +149,11 @@ class ContextAttention(nn.Module):
 
     def _forward(self, x):
         B, N, D = x.shape # pre normed x
-        K, T, H, d = self.bank_size, self.bank_depth, self.n_h, self.h_d
+        K, H, d = self.bank_size, self.n_h, self.h_d
         
         x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
-        alpha = torch.softmax(self.cls_to_w(x[:, 0]).view(B, H, 1, d), dim=1)
+        
+        alpha = self.cls_to_w(x[:, 0]).view(B, H, 1, N)
         W = F.softmax(self.bank * alpha, -1)
         ctx_v = W @ x_v # B, H, K, D
         ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # B, K, D
@@ -222,7 +223,6 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
         bank_size=64,
-        bank_depth=1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -237,7 +237,6 @@ class Block(nn.Module):
             proj_drop=drop,
             bank_size=bank_size,
             num_tokens=num_tokens,
-            bank_depth=bank_depth
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -425,7 +424,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv18(nn.Module):
+class ContextViTv19(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -446,7 +445,6 @@ class ContextViTv18(nn.Module):
         token_drop=0,
         n_registers=0,
         bank_size=16,
-        bank_depth=1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -515,7 +513,6 @@ class ContextViTv18(nn.Module):
                 num_tokens= num_tokens,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
-                bank_depth=bank_depth
             )
             for i in range(depth)
         ]
