@@ -149,9 +149,9 @@ class ContextAttention(nn.Module):
         self.bank = nn.Parameter(torch.randn(1, bank_size, dim))
         
         self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-        self.cls_to_ab = nn.Sequential(nn.Linear(dim, dim),
+        self.cls_to_ab = nn.Sequential(nn.Linear(dim, dim * 4),
                                       nn.GELU(),
-                                      nn.Linear(dim, 2 * dim))
+                                      nn.Linear(dim * 4, 2 * dim))
         self.norm_ctx = norm_layer(dim)
         self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -493,7 +493,7 @@ class ContextMoeViTv2(nn.Module):
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
-        self.n_registers = bank_size - 1
+        self.n_registers = n_registers
         self.bank_size = bank_size
         self.return_cls_only = return_cls_only
         _ = n_registers

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
+from modules.context_vit_moe_v2 import ContextMoeViTv2
 from modules.context_vit_v5 import ContextViTv5
 from modules.context_vit_v6 import ContextViTv6
 from modules.context_vit_v7 import ContextViTv7
@@ -26,6 +27,7 @@ from .utils import to_min
 
 def get_arc(arc):
     return {"vit" : ViT,
+            "moev2" : ContextMoeViTv2,
             "citv5" : ContextViTv5,
             "citv6" : ContextViTv6,
             "citv7" : ContextViTv7,
@@ -38,6 +40,7 @@ def get_arc(arc):
             "citv15" : ContextViTv15,
             "citv16" : ContextViTv16,
             "citv17" : ContextViTv17,
+            
             }[arc]
             
 
