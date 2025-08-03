@@ -190,9 +190,10 @@ def profile_model(model_dict, x, y, args):
     profile_dir.mkdir(parents=True, exist_ok=True)
     print("INFO: Performing Profiling")
     
-    def prof_conf(file_name):
+    def run_profiling(model, file_name):
+        print(f"INFO: Profiling {name}")
         profile_path = profile_dir / file_name
-        return torch.profiler.profile(
+        prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             schedule=torch.profiler.schedule(
                 wait=5,      # Number of steps to skip (do nothing)
@@ -207,6 +208,10 @@ def profile_model(model_dict, x, y, args):
             with_flops=True,
             with_modules=True
         )
+        with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
+            for _ in range(20):
+                model.forward(x, y, defaultdict(list), mixup=True)
+                prof.step()
     
     org_states = {
             "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
@@ -216,13 +221,7 @@ def profile_model(model_dict, x, y, args):
     
     models = model_dict["models"].cuda().train()
     for name, model in models.items():
-        print(f"INFO: Profiling {name}")
-        prof = prof_conf(name)
-        with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
-            for _ in range(20):
-                model.forward(x, y, defaultdict(list), mixup=True)
-                prof.step()
-        del prof
+        run_profiling(model, name)
     
     schedulers = model_dict["schedulers"]
     for n in models:
