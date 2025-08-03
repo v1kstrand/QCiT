@@ -199,7 +199,7 @@ def profile_model(model_dict, x, y, args):
 
     def run_profiling(model, model_name):
         print(f"INFO: Profiling {name}")
-        file_name = f"{get_time(get_date=True)}_{model_name}"
+        file_name = f"{get_time(get_date=True)}__{model_name}"
         profile_path = profile_dir / file_name
         prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
