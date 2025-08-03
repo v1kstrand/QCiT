@@ -154,7 +154,7 @@ def prep_training(dict_args, exp):
     # Set config
     save_args = dict(sorted(vars(args).items()))
     save_args["exp_dir"] = str(save_args["exp_dir"])
-    save_args["exp_init"] = False
+    save_args["exp_init"] = save_args["profile_models"] = False
     args.save_args = save_args
     dump_args(args, args.exp_dir / "params")
     
