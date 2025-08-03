@@ -6,6 +6,7 @@ import math
 import torch
 import torch.profiler
 
+from .config import AMP_DTYPE
 from .utils import get_time, reset
 
 def init_model(model, args, print_fn=print):
@@ -217,7 +218,7 @@ def profile_model(model_dict, x, y, args):
     for name, model in models.items():
         print(f"INFO: Profiling {name}")
         prof = prof_conf(name)
-        with prof:
+        with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
             for _ in range(20):
                 model.forward(x, y, defaultdict(list), mixup=True)
                 prof.step()
