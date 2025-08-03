@@ -83,7 +83,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 stats = {name: defaultdict(list) for name in models}
                 next_stats = tracker.curr_step + args.freq["stats"]
                 
-            if args.profile_models:
+            if args.profile_models and mixup:
                 profile_model(model_dict, imgs, labels, args)
                 assert False, "done"
                     
