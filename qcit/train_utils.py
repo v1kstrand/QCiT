@@ -222,6 +222,7 @@ def profile_model(model_dict, x, y, args):
             for _ in range(20):
                 model.forward(x, y, defaultdict(list), mixup=True)
                 prof.step()
+        del prof
     
     schedulers = model_dict["schedulers"]
     for n in models:
