@@ -99,15 +99,14 @@ class OuterModel(nn.Module):
         else:
             ce, acc1, acc5 = self.inner(imgs, labels)
 
-        pref = "1-Train-Metrics" if self.training else "2-Val-Metrics"
-        stats[f"{pref}/{self.name} CE "] = ce.item()
         if acc1 is not None:
+            pref = "1-Train-Metrics" if self.training else "2-Val-Metrics"
+            stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
-            
-        for k, v in stats.items():
-            cum_stats[k].append(v)
-        del stats
+            for k, v in stats.items():
+                cum_stats[k].append(v)
+            del stats
         
 
 class PushGrad(nn.Module):
