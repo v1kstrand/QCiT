@@ -125,7 +125,6 @@ class ContextAttention(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
@@ -143,6 +142,9 @@ class ContextAttention(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
+        with torch.no_grad():
+            trunc_normal_(self.bank, std=0.02)
+        
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
@@ -153,8 +155,8 @@ class ContextAttention(nn.Module):
         
         x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
         
-        alpha = self.cls_to_w(x[:, 0]).view(B, H, 1, N)
-        W = F.softmax(self.bank * alpha, -1)
+        alpha = self.cls_to_w(x[:, 0]).view(B, H, 1, N) # B, H, 1, N
+        W = F.softmax(self.bank * alpha, -1) # B, H, K, N
         ctx_v = W @ x_v # B, H, K, D
         ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # B, K, D
         ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, K, d]
