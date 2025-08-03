@@ -66,9 +66,14 @@ class OuterModel(nn.Module):
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
 
-    def forward(self, imgs, labels, cum_stats, mixup=False, time_it=None):
+    def forward(self, imgs, labels, cum_stats, mixup=False, time_it=None, profiling=False):
         stats = {}
         
+        if profiling:
+            self.backward.zero()
+            ce, acc1, acc5 = self.inner(imgs, labels, mixup)
+            self.backward(self.inner, ce)
+            return
         if self.training:
             self.backward.zero()
             
