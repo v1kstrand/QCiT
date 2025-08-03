@@ -147,7 +147,7 @@ class ContextAttention(nn.Module):
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
+        self.out_drop = nn.Dropout(proj_drop) # 3.68
         
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
