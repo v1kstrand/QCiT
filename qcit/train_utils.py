@@ -199,7 +199,8 @@ def profile_model(model_dict, x, y, args):
 
     def run_profiling(model, model_name):
         print(f"INFO: Profiling {name}")
-        profile_path = profile_dir / model_name
+        file_name = f"{get_time(get_date=True)}_{model_name}"
+        profile_path = profile_dir / file_name
         prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             on_trace_ready=torch.profiler.tensorboard_trace_handler(str(profile_path)),
@@ -222,8 +223,7 @@ def profile_model(model_dict, x, y, args):
                 torch.cuda.synchronize()
                 prof.step()
         
-        file_name = f"{model_name}_{get_time(get_date=True)}"        
-        zip_path = str(profile_dir / file_name)
+        zip_path = str(profile_path / file_name)
         shutil.make_archive(str(zip_path), 'zip', str(profile_path))
     
     models = model_dict["models"].cuda().train()
