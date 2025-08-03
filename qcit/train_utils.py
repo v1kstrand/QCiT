@@ -223,7 +223,7 @@ def profile_model(model_dict, x, y, args):
                 prof.step()
         
         file_name = f"{model_name}_{get_time(get_date=True)}" 
-        prof.export_chrome_trace(str(profile_dir / model_name / file_name) + ".json")
+        #prof.export_chrome_trace(str(profile_dir / model_name / file_name) + ".json")
         
         zip_path = str(profile_dir / file_name) + ".zip"
         shutil.make_archive(str(zip_path), 'zip', str(profile_path))
