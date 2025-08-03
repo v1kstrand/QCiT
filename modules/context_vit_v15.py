@@ -122,6 +122,7 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        mlp_q_exp: int = -1,
         norm_layer=nn.LayerNorm,
     ):
         super().__init__()
@@ -132,13 +133,17 @@ class ContextAttention(nn.Module):
         self.h_d = dim // num_heads
         self.bank_size = bank_size
         self.query_t = query_t
-        self.bank = nn.Parameter(torch.randn(1, bank_size, num_tokens))
+        self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, self.h_d))
         
         self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
-        self.proj_Q = nn.Linear(dim, num_tokens * query_t, bias=proj_bias)
+        if mlp_q_exp == -1:
+            self.proj_Q = nn.Linear(self.h_d, num_tokens * query_t, bias=False)
+        else:
+            self.proj_Q = nn.Sequential(nn.Linear(self.h_d, self.h_d * mlp_q_exp, bias=False),
+                                        nn.GELU(),
+                                        nn.Linear(self.h_d * mlp_q_exp, num_tokens * query_t, bias=False))
         
-        self.norm_ctx = norm_layer(dim)
-        self.proj_ctx = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
@@ -152,33 +157,14 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape # pre normed x
         K, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
 
-        x_q, x_v = torch.chunk(self.proj_x(x), 2, -1) # 2[B, H, N, d] 
-        w_q = F.softmax(self.bank, -1).expand(B, -1, -1) # [B, K, N]
-        Q = torch.bmm(w_q, x) # B, K, D +KD
-        w_ctx = F.softmax(self.proj_Q(Q).reshape(B, K * T, N), -1) # B, TK, N 
+        x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
+        bank_q = self.bank.expand(B, -1, -1, -1) # [B, H, K, d]
+        Q = self.sdpa(bank_q, x_q, x_v) # [B, H, K, d]
+        w_ctx = F.softmax(self.proj_Q(Q).view(B, H, K * T, N), -1) # B, H, KT, N
+        ctx_v = (w_ctx @ x_v) # B, H, KT, D
+        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K * T, D))
+        ctx_k = ctx_k.view(B, K * T, H, d).transpose(1, 2) # [B, H, TK, d]
         
-        ctx = self.norm_ctx(torch.bmm(w_ctx, x_v)) # B, TK, D 
-        ctx_k, ctx_v = self.proj_ctx(ctx).view(B, K * T, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, TK, d]
-        
-        x_q = x_q.view(B, N, H, d).transpose(1, 2)
-        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
-        x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
-    
-    def _forward_v2(self, x):
-        B, N, D = x.shape # pre normed x
-        K, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
-
-        x_q, x_v = torch.chunk(self.proj_x(x), 2, -1) # 2[B, H, N, d] 
-        w_q = F.softmax(self.bank, -1).expand(B, -1, -1) # [B, K, N]
-        Q = torch.bmm(w_q, x) # B, K, D +KD
-        w_ctx = F.softmax(self.proj_Q(Q).reshape(B, K * T, N), -1) # B, TK, N 
-        
-        ctx = torch.bmm(w_ctx, x_v) # B, TK, D 
-        ctx_v = ctx.view(B, K * T, H, d).transpose(1, 2)
-        ctx_k = self.proj_ctx(ctx_v).view(B, K * T, H, d).transpose(1, 2) # 2[B, H, TK, d]
-        
-        x_q = x_q.view(B, N, H, d).transpose(1, 2)
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
@@ -244,6 +230,7 @@ class Block(nn.Module):
         flash_mlp: bool = False,
         bank_size=64,
         query_t=1,
+        mlp_q_exp=-1,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -258,7 +245,8 @@ class Block(nn.Module):
             proj_drop=drop,
             bank_size=bank_size,
             query_t=query_t,
-            num_tokens=num_tokens
+            num_tokens=num_tokens,
+            mlp_q_exp=mlp_q_exp,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -446,7 +434,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv14(nn.Module):
+class ContextViTv15(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -468,6 +456,7 @@ class ContextViTv14(nn.Module):
         n_registers=0,
         bank_size=16,
         query_t=1,
+        mlp_q_exp=-1,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -534,6 +523,7 @@ class ContextViTv14(nn.Module):
                 layerscale=layerscale,
                 bank_size=bank_size,
                 query_t=query_t,
+                mlp_q_exp=mlp_q_exp,
                 num_tokens= num_tokens,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
