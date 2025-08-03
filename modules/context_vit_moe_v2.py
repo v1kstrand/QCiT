@@ -496,7 +496,6 @@ class ContextMoeViTv2(nn.Module):
         self.n_registers = n_registers
         self.bank_size = bank_size
         self.return_cls_only = return_cls_only
-        _ = n_registers
 
         self.patch_embed = embed_layer(
             img_size=img_size,
