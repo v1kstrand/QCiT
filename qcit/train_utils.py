@@ -196,12 +196,13 @@ def profile_model(model_dict, x, y, args):
         "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
     }
 
-    def run_profiling(model, file_dir):
+
+    def run_profiling(model, model_name):
         print(f"INFO: Profiling {name}")
-        file_name = f"{file_dir}_{get_time(get_date=True)}.json"
-        profile_path = profile_dir / file_dir / file_name
+        profile_path = profile_dir / model_name
         prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(profile_path)),
             schedule=torch.profiler.schedule(
                 wait=5,      # Number of steps to skip (do nothing)
                 warmup=5,    # Number of warmup steps (start recording, but don't save trace)
@@ -220,7 +221,12 @@ def profile_model(model_dict, x, y, args):
                 model.forward(x, y, defaultdict(list), mixup=True)
                 torch.cuda.synchronize()
                 prof.step()
-        prof.export_chrome_trace(str(profile_path))
+        
+        file_name = f"{model_name}_{get_time(get_date=True)}" 
+        prof.export_chrome_trace(str(profile_dir / model_name / file_name) + ".json")
+        
+        zip_path = str(profile_dir / file_name) + ".zip"
+        shutil.make_archive(str(zip_path), 'zip', str(profile_path))
     
     models = model_dict["models"].cuda().train()
     for name, model in models.items():
