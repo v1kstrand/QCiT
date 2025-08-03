@@ -209,16 +209,16 @@ def profile_model(model_dict, x, y, args):
             ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
             record_shapes=True,
-            with_stack=True,
+            with_stack=False,
             profile_memory=True,
             with_flops=True,
             with_modules=True
         )
         with prof, torch.amp.autocast("cuda", dtype=AMP_DTYPE):
             for _ in range(20):
-                torch.cuda.synchronize() 
+                torch.cuda.synchronize()
                 model.forward(x, y, defaultdict(list), mixup=True)
-                torch.cuda.synchronize() 
+                torch.cuda.synchronize()
                 prof.step()
     
     models = model_dict["models"].cuda().train()
