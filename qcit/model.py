@@ -118,6 +118,8 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
             
         for i, b in enumerate(self.inner.model.blocks):
+            if not hasattr(b.attn, "W"):
+                break
             w = b.attn.W.cpu().numpy()
             fig = plot_heads_softmax(w, f"Block {i}")
             log_fig(fig, f"Block {i}", self.args.exp)
