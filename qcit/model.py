@@ -117,13 +117,6 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
             
-        for i, b in enumerate(self.inner.model.blocks):
-            if not hasattr(b.attn, "W"):
-                break
-            w = b.attn.W.cpu().numpy()
-            fig = plot_heads_softmax(w, f"Block {i}")
-            log_fig(fig, f"Block {i}", self.args.exp)
-            
         for k, v in stats.items():
             cum_stats[k].append(v)
         del stats
@@ -169,9 +162,18 @@ def get_encoder(module, args, model):
             return_cls_only=kw.get("return_cls_only", True),
             **kw.get("unique", {})
         )
-    
-    
+
+# PLOT Util
+
 def plot_heads_softmax(sample_W, title):
+    """
+    for i, b in enumerate(self.inner.model.blocks):
+        if not hasattr(b.attn, "W"):
+            break
+        w = b.attn.W.cpu().numpy()
+        fig = plot_heads_softmax(w, f"Block {i}")
+        log_fig(fig, f"Block {i}", self.args.exp)
+    """
     H, N = sample_W.shape
     fig, axes = plt.subplots(H, 1, figsize=(10, 2 * H), squeeze=False)
     for h in range(H):
