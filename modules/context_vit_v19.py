@@ -162,7 +162,6 @@ class ContextAttention(nn.Module):
         
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        #self.W = W[0, :, 0].clone().detach()
         
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     

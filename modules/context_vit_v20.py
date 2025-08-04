@@ -114,8 +114,7 @@ class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_tokens,
-        head_factor: int = 2,
+        num_prototypes: int = 4,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -127,34 +126,36 @@ class ContextAttention(nn.Module):
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
-        self.head_factor = head_factor
+        self.n_proto = num_prototypes
+        self.prototypes = nn.Parameter(torch.randn(1, num_heads, self.h_d, num_prototypes))
         
-        self.proj_x = nn.Linear(dim, 2 * dim + num_tokens * head_factor, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
+        
+        with torch.no_grad():
+            trunc_normal_(self.prototypes, std=0.02)
         
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, N, D = x.shape 
-        H, d = self.n_h, self.h_d
-        f, K = self.head_factor, (self.head_factor * N) // H
+        B, N, D = x.shape # pre normed x
+        M, H, d = self.n_proto, self.n_h, self.h_d
         
-        x_qv, w = torch.split(self.proj_x(x), (D * 2, N*f), -1) # 2[B, N, 2D/Nf]
-        x_q, x_v = x_qv.view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
-        
-        w = w.reshape(B, K, H, N).transpose(1, 2)
-        ctx_v = F.softmax(w, -1) @ x_v # [B, H, K, D]
-        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # [B, K, D]
-        ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, K, d]
+        x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
+        logits = torch.matmul(x_v, self.prototypes)  # [B, H, N, K]
+        w = F.softmax(logits.transpose(2, 3), -1) # B, H, K, N
+        ctx_v = w @ x_v # B, H, K, D
+        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, M, D)) # B, K, D
+        ctx_k = ctx_k.view(B, M, H, d).transpose(1, 2) # [B, H, K, d]
         
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
-        x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
+        x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]        
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:
@@ -204,7 +205,6 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
-        num_tokens,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -216,7 +216,7 @@ class Block(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
-        head_factor=2,
+        num_prototypes=64,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -229,8 +229,7 @@ class Block(nn.Module):
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
-            head_factor=head_factor,
-            num_tokens=num_tokens,
+            num_prototypes=num_prototypes,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -438,7 +437,7 @@ class ContextViTv20(nn.Module):
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        head_factor=2,
+        num_prototypes=16,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -462,15 +461,16 @@ class ContextViTv20(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        
+        assert num_prototypes >= 1, "num_prototypes needs to be 1 or more"
         self.num_features = self.embed_dim = embed_dim
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
-        self.head_factor = head_factor
+        self.num_prototypes = num_prototypes
         self.return_cls_only = return_cls_only
+        _ = n_registers
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -481,7 +481,6 @@ class ContextViTv20(nn.Module):
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
         num_tokens = 1 + self.n_registers + self.n_patches
-        assert (num_tokens * head_factor) % num_heads == 0
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -503,8 +502,7 @@ class ContextViTv20(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                head_factor=head_factor,
-                num_tokens= num_tokens,
+                num_prototypes=num_prototypes,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
             )
