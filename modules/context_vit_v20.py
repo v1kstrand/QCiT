@@ -115,30 +115,26 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         num_tokens,
-        ctx_factor: int = 4,
+        head_factor: int = 2,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        norm_layer=nn.LayerNorm,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
-        self.ctx_factor = ctx_factor
+        self.head_factor = head_factor
         
-        self.proj_x = nn.Linear(dim, 2 * dim + num_tokens, bias=qkv_bias)
+        self.proj_x = nn.Linear(dim, 2 * dim + num_tokens * head_factor, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
-        
-        with torch.no_grad():
-            trunc_normal_(self.bank, std=0.02)
         
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
@@ -146,12 +142,13 @@ class ContextAttention(nn.Module):
 
     def _forward(self, x):
         B, N, D = x.shape 
-        F, K, H, d = self.ctx_factor, N // self.ctx_factor, self.n_h, self.h_d
+        H, d = self.n_h, self.h_d
+        f, K = self.head_factor, (self.head_factor * N) // H
         
-        x_qv, w = torch.split(self.proj_x(x), (D * 2, N), -1) # 2[B, N, 2D/N]
+        x_qv, w = torch.split(self.proj_x(x), (D * 2, N*f), -1) # 2[B, N, 2D/Nf]
         x_q, x_v = x_qv.view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
         
-        w = w.view(B, K, F, N).mean(2) # [B, K, N]
+        w = w.reshape(B, K, H, N).transpose(1, 2)
         ctx_v = F.softmax(w, -1) @ x_v # [B, H, K, D]
         ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # [B, K, D]
         ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, K, d]
@@ -219,7 +216,7 @@ class Block(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         flash_mlp: bool = False,
-        bank_size=64,
+        head_factor=2,
         sdp_threshold=None,
     ) -> None:
         super().__init__()
@@ -232,7 +229,7 @@ class Block(nn.Module):
             proj_bias=proj_bias,
             attn_drop=attn_drop,
             proj_drop=drop,
-            bank_size=bank_size,
+            head_factor=head_factor,
             num_tokens=num_tokens,
         )
         self.ls1 = (
@@ -441,7 +438,7 @@ class ContextViTv19(nn.Module):
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        bank_size=16,
+        head_factor=2,
         flash_mlp=False,
         return_cls_only=True,
         sdp_threshold=inf,
@@ -465,16 +462,15 @@ class ContextViTv19(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        assert bank_size >= 1, "bank_size needs to be 1 or more"
+        
         self.num_features = self.embed_dim = embed_dim
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
         self.n_registers = n_registers
-        self.bank_size = bank_size
+        self.head_factor = head_factor
         self.return_cls_only = return_cls_only
-        _ = n_registers
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -485,6 +481,7 @@ class ContextViTv19(nn.Module):
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
         num_tokens = 1 + self.n_registers + self.n_patches
+        assert (num_tokens * head_factor) % num_heads == 0
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -506,7 +503,7 @@ class ContextViTv19(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                bank_size=bank_size,
+                head_factor=head_factor,
                 num_tokens= num_tokens,
                 flash_mlp=flash_mlp,
                 sdp_threshold=sdp_threshold,
