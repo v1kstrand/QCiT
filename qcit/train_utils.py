@@ -8,7 +8,8 @@ import torch.profiler
 from .config import AMP_DTYPE
 from .utils import get_time, reset
 
-def init_model(model, args, print_fn=print):
+def init_model(model, args, print_out=False):
+    print_fn = print if print_out else lambda x: None
     base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
     wd = args.opt["wd_final"]
     layer_decay = args.opt["ld"]

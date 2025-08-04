@@ -88,7 +88,7 @@ def load_model(args):
 
     for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
-        params = init_model(m, args, print_fn = print if i == 0 else lambda x: None)
+        params = init_model(m, args, i == 0)
         opt = torch.optim.AdamW([*params.values()], fused=True)
         exp = args.exp if name in args.opt["log"] else None
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
