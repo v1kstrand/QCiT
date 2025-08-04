@@ -49,6 +49,16 @@ def log_img(x, exp, name):
     plt.close(fig)
     
 @torch.no_grad()
+def log_fig(fig, name, exp):
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    img_rgba = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+    img_rgb = img_rgba[..., :3]
+    img = Image.fromarray(img_rgb)
+    exp.log_image(img, name=name)
+    plt.close(fig)
+    
+@torch.no_grad()
 def denormalize_and_plot_grid(img_batch, grid_n, exp=None, plot_name="data_sample"):
     def denormalize(img):
         if img.dim() == 4:

@@ -115,26 +115,22 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         num_tokens,
-        bank_size: int = 4,
+        ctx_factor: int = 4,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        norm_layer=nn.LayerNorm,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
-        self.bank_size = bank_size
-        self.bank = nn.Parameter(torch.randn(1, num_heads, bank_size, num_tokens))
+        self.ctx_factor = ctx_factor
         
-        self.proj_x = nn.Linear(dim, 2 * dim, bias=qkv_bias)
-        self.cls_to_w = nn.Sequential(nn.Linear(dim, dim * 2),
-                                      nn.GELU(),
-                                      nn.Linear(dim * 2, self.n_h * num_tokens))
-        
+        self.proj_x = nn.Linear(dim, 2 * dim + num_tokens, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
@@ -143,28 +139,25 @@ class ContextAttention(nn.Module):
         
         with torch.no_grad():
             trunc_normal_(self.bank, std=0.02)
-        self.W = None
         
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
     def _forward(self, x):
-        B, N, D = x.shape # pre normed x
-        K, H, d = self.bank_size, self.n_h, self.h_d
+        B, N, D = x.shape 
+        F, K, H, d = self.ctx_factor, N // self.ctx_factor, self.n_h, self.h_d
         
-        x_q, x_v = self.proj_x(x).view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
+        x_qv, w = torch.split(self.proj_x(x), (D * 2, N), -1) # 2[B, N, 2D/N]
+        x_q, x_v = x_qv.view(B, N, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, N, d]
         
-        alpha = self.cls_to_w(x[:, 0]).view(B, H, 1, N) # B, H, 1, N
-        W = F.softmax(self.bank * alpha, -1) # B, H, K, N
-        ctx_v = W @ x_v # B, H, K, D
-        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # B, K, D
+        w = w.view(B, K, F, N).mean(2) # [B, K, N]
+        ctx_v = F.softmax(w, -1) @ x_v # [B, H, K, D]
+        ctx_k = self.proj_ctx(ctx_v.transpose(1, 2).reshape(B, K, D)) # [B, K, D]
         ctx_k = ctx_k.view(B, K, H, d).transpose(1, 2) # [B, H, K, d]
         
         x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
         x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        self.W = W[0, :, 0].clone().detach()
-        
         return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
     
     def forward(self, x: Tensor, threshold=None) -> Tensor:

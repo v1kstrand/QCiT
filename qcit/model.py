@@ -1,5 +1,6 @@
 import time
 from inspect import signature
+import matplotlib.pyplot as plt
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -24,7 +25,8 @@ from modules.context_vit_v19 import ContextViTv19
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
-from .utils import to_min
+from .utils import to_min, log_fig
+
 
 
 def get_arc(arc):
@@ -114,6 +116,12 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
+            
+        for i, b in enumerate(self.inner.model.blocks):
+            w = b.attn.W.cpu().numpy()
+            fig = plot_heads_softmax(w, f"Block {i}")
+            log_fig(fig, f"Block {i}", self.args.exp)
+            
         for k, v in stats.items():
             cum_stats[k].append(v)
         del stats
@@ -159,3 +167,18 @@ def get_encoder(module, args, model):
             return_cls_only=kw.get("return_cls_only", True),
             **kw.get("unique", {})
         )
+    
+    
+def plot_heads_softmax(sample_W, title):
+    H, N = sample_W.shape
+    fig, axes = plt.subplots(H, 1, figsize=(10, 2 * H), squeeze=False)
+    for h in range(H):
+        ax = axes[h, 0]
+        ax.bar(range(N), sample_W[h])
+        ax.set_title(f'Softmax Distribution for Head {h}')
+        ax.set_xlabel('Token Index (N)')
+        ax.set_ylabel('Probability')
+    plt.tight_layout()
+    fig.suptitle(title, fontsize=16)
+    plt.subplots_adjust(top=0.90)  
+    return fig
