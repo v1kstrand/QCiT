@@ -146,7 +146,7 @@ class ContextAttention(nn.Module):
         x_q, w_x = torch.split(self.proj_x(x), (D, K), -1) # 2[B, N, D/K]
         ctx = F.softmax(w_x.transpose(1, 2), -1) @ x # [B, K, D]
         ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.reshape(B, N, H, d).transpose(1, 2), ctx_k, ctx_v) # [B, H, N, d]
+        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
         return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
 
 # # Block
