@@ -25,6 +25,7 @@ from modules.context_vit_v19 import ContextViTv19
 from modules.context_vit_v20 import ContextViTv20
 from modules.context_vit_v21 import ContextViTv21
 from modules.context_vit_v22 import ContextViTv22
+from modules.context_vit_v23 import ContextViTv23
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -52,6 +53,7 @@ def get_arc(arc):
             "citv20" : ContextViTv20,
             "citv21" : ContextViTv21,
             "citv22" : ContextViTv22,
+            "citv23" : ContextViTv23,
             }[arc]
             
 
@@ -192,3 +194,4 @@ def plot_heads_softmax(sample_W, title):
     fig.suptitle(title, fontsize=16)
     plt.subplots_adjust(top=0.90)  
     return fig
+
