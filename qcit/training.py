@@ -66,6 +66,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 time_it = step % args.freq["time_it"] if step > start_step + magic else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
+                    
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():

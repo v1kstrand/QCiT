@@ -8,6 +8,7 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+from math import inf
 
 
 import torch
@@ -36,7 +37,6 @@ class LayerScale(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
-
 
 class Mlp(nn.Module):
     def __init__(
@@ -68,40 +68,22 @@ class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_prototypes: int = 128,
-        num_heads: int = 6,
-        qkv_bias: bool = False,
-        attn_drop: float = 0.0,
-        proj_bias: bool = True,
-        proj_drop: float = 0.0,
+        num_tokens: int,
+        num_prototypes: int = 512,
     ):
         super().__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
-        self.n_h = num_heads
-        self.h_d = dim // num_heads
-        self.n_proto = num_prototypes
+        self.prototypes = nn.Linear(dim, num_prototypes)
+        self.N_to_D = nn.Linear(num_tokens, dim)
+        self.M_to_N = nn.Linear(num_prototypes, num_tokens)
         
-        self.proj_x = nn.Linear(dim, dim + num_prototypes, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
-
-        self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-        
-    def sdpa(self, q, k, v):
-        dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
-
     def forward(self, x):
-        B, N, D = x.shape 
-        K, H, d = self.n_proto, self.n_h, self.h_d
-        
-        x_q, w_x = torch.split(self.proj_x(x), (D, K), -1) # 2[B, N, D/K]
-        ctx = F.softmax(w_x.transpose(1, 2), -1) @ x # [B, K, D]
-        ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
-        return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
+        # B, N, D = x.size() pre normed
+        A = self.prototypes(x) # B, N, M
+        A_md = self.N_to_D(A.transpose(-1, -2)) # B, M, D
+        A_dn = self.M_to_N(A_md.transpose(-1, -2)) # B, M, D
+        x_out = A_dn.transpose(-1, -2) # B, N, D
+        return x_out # x = x + x_out
+
 
 # # Block
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
@@ -131,35 +113,30 @@ class Block(nn.Module):
     def __init__(
         self,
         dim: int,
+        num_tokens,
         num_heads: int,
         mlp_ratio: float = 4.0,
-        qkv_bias: bool = False,
-        proj_bias: bool = True,
         ffn_bias: bool = True,
         drop: float = 0.0,
-        attn_drop: float = 0.0,
         layerscale: Optional[float] = None,
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         num_prototypes=64,
+        
     ) -> None:
         super().__init__()
-        self.norm1 = norm_layer(dim)
+        self.norm1 = norm_layer(dim) 
         self.attn = ContextAttention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
+            dim=dim,
             num_prototypes=num_prototypes,
+            num_tokens=num_tokens
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
         )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim)
+        self.norm2 = norm_layer(dim) 
 
         self.mlp = Mlp(
             in_features=dim,
@@ -173,6 +150,7 @@ class Block(nn.Module):
         )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.sample_drop_ratio = drop_path
+
 
     def forward(self, x: Tensor) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
@@ -339,7 +317,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv21(nn.Module):
+class ContextViTv24(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -349,9 +327,7 @@ class ContextViTv21(nn.Module):
         depth=12,
         num_heads=6,
         mlp_ratio=4.0,
-        qkv_bias=False,
         ffn_bias=True,
-        proj_bias=True,
         drop_path_rate=0.0,
         drop_path_uniform=True,
         layerscale=None,
@@ -416,14 +392,13 @@ class ContextViTv21(nn.Module):
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
                 ffn_bias=ffn_bias,
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
                 num_prototypes=num_prototypes,
+                num_tokens=num_tokens
             )
             for i in range(depth)
         ]
