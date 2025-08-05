@@ -128,7 +128,7 @@ class ContextAttention(nn.Module):
         self.h_d = dim // num_heads
         self.n_proto = num_prototypes
         
-        self.prototypes = nn.Parameter(torch.zeros(1, num_prototypes, dim))
+        self.prototypes = nn.Parameter(torch.zeros(1, 1, num_prototypes, dim))
         self.proj_x = nn.Linear(dim, dim , bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -148,7 +148,7 @@ class ContextAttention(nn.Module):
         K, H, d = self.n_proto, self.n_h, self.h_d
         
         x_q = self.proj_x(x) # 2[B, N, D]
-        ctx = self.sdpa(self.prototypes, x, x)
+        ctx = self.sdpa(self.prototypes.expand(B, -1, -1, -1), x.unsqueeze(1), x.unsqueeze(1))
         ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
         x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
         return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
