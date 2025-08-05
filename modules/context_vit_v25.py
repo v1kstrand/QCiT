@@ -80,7 +80,6 @@ class ContextAttention(nn.Module):
         self.h_d = dim // num_heads
         self.num_prototypes = num_prototypes
 
-        # Each head has separate prototypes
         self.prototypes_weight = nn.Parameter(torch.randn(self.n_h, self.h_d, num_prototypes))
         self.N_to_D_weight = nn.Parameter(torch.randn(self.n_h, num_tokens, self.h_d))
         self.norm = norm_layer(self.h_d)
@@ -94,9 +93,12 @@ class ContextAttention(nn.Module):
             self.N_to_D_bias = torch.tensor(0)
             self.M_to_N_bias = torch.tensor(0)
             
-
-        # Final linear projection merging heads
         self.head_merge = nn.Linear(dim, dim)
+        
+        with torch.no_grad():
+            trunc_normal_(self.prototypes_weight, std=0.02)
+            trunc_normal_(self.N_to_D_weight, std=0.02)
+            trunc_normal_(self.M_to_N_weight, std=0.02)
 
     def forward(self, x):
         B, N, D = x.size()
