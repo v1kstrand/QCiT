@@ -69,7 +69,10 @@ class ContextAttention(nn.Module):
         num_tokens: int,
         num_heads: int = 6,
         num_prototypes: int = 128,
-        use_bias = True
+        use_bias = True,
+        act_layer: Callable[..., nn.Module] = nn.GELU,
+        norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
+        
     ):
         super().__init__()
         assert dim % num_heads == 0
@@ -80,6 +83,8 @@ class ContextAttention(nn.Module):
         # Each head has separate prototypes
         self.prototypes_weight = nn.Parameter(torch.randn(self.n_h, self.h_d, num_prototypes))
         self.N_to_D_weight = nn.Parameter(torch.randn(self.n_h, num_tokens, self.h_d))
+        self.norm = norm_layer(self.h_d)
+        self.act = act_layer()
         self.M_to_N_weight = nn.Parameter(torch.randn(self.n_h, num_prototypes, num_tokens))
         
         if use_bias:
@@ -105,7 +110,8 @@ class ContextAttention(nn.Module):
 
         # Project N → d: [B,H,M,N] @ [H,N,d] → [B,H,M,d]
         A_trans = A.transpose(-1, -2)
-        A_md = torch.matmul(A_trans, self.N_to_D_weight) + self.N_to_D_bias  
+        A_md = torch.matmul(A_trans, self.N_to_D_weight) + self.N_to_D_bias 
+        A_md = self.act(self.norm(A_md))
 
         # Project M → N: [B,H,d,M] @ [H,M,N] → [B,H,d,N]
         A_md_trans = A_md.transpose(-1, -2)
@@ -164,7 +170,9 @@ class Block(nn.Module):
             dim=dim,
             num_heads=num_heads,
             num_prototypes=num_prototypes,
-            num_tokens=num_tokens
+            num_tokens=num_tokens,
+            act_layer=act_layer,
+            norm_layer=norm_layer
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
