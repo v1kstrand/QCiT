@@ -122,6 +122,7 @@ class ContextAttention(nn.Module):
         self.dim = dim
         self.n_proto = num_prototypes
         
+        self.proj = nn.Linear(dim, dim * 2)
         self.prototypes = nn.Linear(dim, num_prototypes)
         self.N_to_D = nn.Linear(num_tokens, dim)
         self.M_to_exp = nn.Linear(num_prototypes, dim * dim_exp)
@@ -129,10 +130,11 @@ class ContextAttention(nn.Module):
         self.out = nn.Linear(dim * dim_exp, dim)
         
     def forward(self, x):
-        score_MN = self.prototypes(x).transpose(-1, -2)
+        Q, V = torch.split(self.proj(x), self.dim, -1)
+        score_MN = self.prototypes(Q).transpose(-1, -2)
         score_MD = self.N_to_D(score_MN).transpose(-1, -2)
         score_expDD = self.M_to_exp(score_MD)
-        return self.out(self.act(x @ score_expDD))
+        return self.out(self.act(V @ score_expDD))
 
 class ContextAttentionMultiHead(nn.Module):
     def __init__(
