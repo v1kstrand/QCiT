@@ -143,7 +143,7 @@ class ContextAttention(nn.Module):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
     
-    def _forward(self, x):
+    def forward(self, x):
         B, N, D = x.shape # pre normed x
         K, H, d = self.n_proto, self.n_h, self.h_d
         
@@ -392,7 +392,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv21(nn.Module):
+class ContextViTv22(nn.Module):
     def __init__(
         self,
         img_size=224,
