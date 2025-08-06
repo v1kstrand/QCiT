@@ -160,7 +160,8 @@ def get_encoder(module, args, model):
     for k, v in kw.get("unique", {}).items():
         assert k in init_params, f"{k} not found in {model.name}"
         print(f"INFO: Assigning ({k} : {v}) to {model.name}")
-        
+    print(f"INFO: {model.name} initiated")
+    
     return module(
             patch_size=args.vkw["patch_size"],
             img_size=args.kw["img_size"],
