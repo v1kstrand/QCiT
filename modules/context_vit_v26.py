@@ -95,7 +95,7 @@ class ContextAttention(nn.Module):
         self.x_d_to_d = nn.Linear(dim, dim, bias=qkv_bias)
         self.A_n_to_n = nn.Linear(num_tokens, num_tokens, bias=proj_bias)
         self.A_kd_to_n = nn.Linear(dim * 4, num_tokens, bias=False)
-        self.out_d_to_d = nn.Linear(dim, dim, bias=qkv_bias)
+        self.out_d_to_d = nn.Linear(dim, dim, bias=proj_bias)
         
     def forward(self, x, A):
         B, N, D = x.shape 
