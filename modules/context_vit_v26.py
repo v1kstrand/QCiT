@@ -68,7 +68,7 @@ class Mlp(nn.Module):
         self.A = None
         return A
     
-    def forward(self, x: Tensor, set_A = True) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         x = self.fc1(x)
         A = self.act(x)
         x = self.drop(A)
