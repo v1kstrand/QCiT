@@ -65,13 +65,14 @@ class Mlp(nn.Module):
         self.A = None
         return A
     
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, set_A = True) -> Tensor:
         x = self.fc1(x)
         A = self.act(x)
         x = self.drop(A)
         x = self.fc2(x)
         x = self.drop(x)
-        self.set_A(A)
+        if set_A:
+            self.set_A(A)
         return x
     
 class ContextAttention(nn.Module):
