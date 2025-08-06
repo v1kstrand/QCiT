@@ -8,8 +8,6 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
-from math import inf
-
 
 import torch
 import torch.nn as nn
@@ -38,52 +36,6 @@ class LayerScale(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
 
-
-class FlashNormLinear(nn.Linear):
-    def __init__(self, in_features, out_features, eps=1e-6, bias=True, rank=None):
-        super().__init__(in_features, out_features, bias)
-        self.rms_weight = nn.Parameter(torch.ones(in_features))
-        self.eps = eps
-        _ = rank  # Not used for now
-
-    def forward(self, x: Tensor) -> Tensor:
-        # RMS normalize
-        ms = (x**2).mean(dim=-1, keepdim=True) + self.eps
-        x = x / (ms**0.5)
-        # Fuse scaling into weight
-        scaled_weight = self.weight * self.rms_weight.unsqueeze(0)
-        return F.linear(x, scaled_weight, self.bias)
-
-
-class FlashMlp(nn.Module):
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
-        act_layer: Callable[..., nn.Module] = nn.GELU,
-        drop: float = 0.0,
-        bias: bool = True,
-    ) -> None:
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-
-        # Only replace fc1 with FlashNormLinear
-        self.fc1 = FlashNormLinear(in_features, hidden_features, bias=bias)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
-        self.drop = nn.Dropout(drop)
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.fc1(x)  # includes RMSNorm internally
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
-
-
 class Mlp(nn.Module):
     def __init__(
         self,
@@ -104,94 +56,49 @@ class Mlp(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
+        A = self.act(x)
+        x = self.drop(A)
         x = self.fc2(x)
         x = self.drop(x)
         return x
-
-class LinearGroupedLowRank(nn.Module): 
-    def __init__(self, d, t): 
-        super().__init__()
-        self.dense = nn.Linear(d, d)
-        self.act = nn.GELU() 
-        self.grouped = nn.Conv1d(d, t*d, 1, groups=t)  # [B, d, N] -> [B, t*d, N]
-
-    def forward(self, x):    # x: [B, N, d]
-        x = self.dense(x)   # [B, N, d]
-        x = self.act(x)     # [B, N, d]
-        x = x.transpose(1, 2)  # [B, d, N]
-        x = self.grouped(x)    # [B, t*d, N]
-        x = x.transpose(2, 1)  # [B, N, t*d]
-        return x
-
+    
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        bank_size: int = 16,
-        query_t: int = 2,
+        num_tokens,
+        num_prototypes,
         num_heads: int = 6,
         qkv_bias: bool = False,
-        attn_drop: float = 0.0,
         proj_bias: bool = True,
-        proj_drop: float = 0.0,
-        norm_layer=nn.LayerNorm,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.n_h = num_heads
         self.h_d = dim // num_heads
-        self.bank_size = bank_size
-        self.query_t = query_t
-
-        self.proj_x = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-        self.proj_q = nn.Linear(dim, dim * query_t, bias=qkv_bias)
+        self.n_proto = num_prototypes
         
-        self.norm_ctx = norm_layer(dim)
-        self.proj_ctx = nn.Linear(dim, dim, bias=proj_bias)
+        self.Q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.n_to_m = nn.Linear(num_tokens, num_prototypes, bias=proj_bias)
+        self.d_to_n = nn.Linear(dim, num_tokens, bias=proj_bias)
+        self.CTX = nn.Linear(dim, dim * 2, bias=proj_bias)
+        self.out = nn.Linear(dim, dim, bias=proj_bias)
         
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
+    def sdpa(self, q, k, v):
+        return F.scaled_dot_product_attention(q, k, v)
 
-        self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-        
-    def sdpa(self, q, k, v, gqa=False):
-        dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, enable_gqa=gqa)
-
-    def _forward(self, x):
+    def forward(self, x):
         B, N, D = x.shape 
-        M, T, H, d = self.bank_size, self.query_t, self.n_h, self.h_d
-
-        x_q, x_k, x_v = self.proj_x(x).view(B, N, 3, H, d).permute(2, 0, 3, 1, 4) # 3[B, H, N, d]
-        Q = self.proj_q(x[:, :M]).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
+        M, H, d = self.n_proto, self.n_h, self.h_d
         
-        ctx_attn = self.sdpa(Q, x_k, x_v) # [B, H, M * T, d]
-        ctx_norm = self.norm_ctx(ctx_attn.transpose(1, 2).reshape(B, M*T, D)) # [B, M * T, D]
-        ctx_k = self.proj_ctx(ctx_norm).view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
-        ctx_v = ctx_norm.view(B, M * T, H, d).transpose(1, 2) # [B, H, M * T, d]
-        
-        x_attn = self.sdpa(x_q, ctx_k, ctx_v) # [B, H, N, d]
-        x_attn = x_attn.transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        return self.out_drop(self.proj_out(x_attn)) # [B, N, D]
-    
-    def forward(self, x: Tensor, threshold=None) -> Tensor:
-        if threshold is None:
-            print(
-                "Warning: SDP kernel threshold is set to None, using default forward method"
-            )
-            return self._forward(x)
-
-        if x.size(1) > threshold:
-            sdp_kernel = SDPBackend.FLASH_ATTENTION
-        else:
-            sdp_kernel = SDPBackend.EFFICIENT_ATTENTION
-
-        with torch.nn.attention.sdpa_kernel(sdp_kernel):
-            return self._forward(x)
-
+        A = self.n_to_m(x.transpose(1, 2)) # [B, D, M] | DMN
+        W = F.softmax(self.d_to_n(A.transpose(1, 2)), -1) # [B, M, N] | DMN
+        ctx_k, ctx_v = self.CTX(W @ x).reshape(B, M, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, M, d] | 2MD^2
+        Q = self.Q(x).view(B, N, H, d).transpose(1, 2).contiguous() # ND^2
+        x_attn = self.sdpa(Q, ctx_k, ctx_v) # [B, H, N, d] | 2DMN
+        return self.out(x_attn.transpose(1, 2).reshape(B, N, D)) # [B, N, D] | ND^2
+        # 4DMN + 2MD^2 + 2ND^2
 
 # # Block
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
@@ -221,43 +128,33 @@ class Block(nn.Module):
     def __init__(
         self,
         dim: int,
+        num_tokens,
         num_heads: int,
+        num_prototypes,
         mlp_ratio: float = 4.0,
-        qkv_bias: bool = False,
-        proj_bias: bool = True,
         ffn_bias: bool = True,
         drop: float = 0.0,
-        attn_drop: float = 0.0,
         layerscale: Optional[float] = None,
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
-        flash_mlp: bool = False,
-        bank_size=64,
-        query_t=1,
-        sdp_threshold=None,
+        
     ) -> None:
         super().__init__()
-        self.sdp_threshold = sdp_threshold
-        self.norm1 = norm_layer(dim) if not flash_mlp else nn.Identity()
+        self.norm1 = norm_layer(dim) 
         self.attn = ContextAttention(
-            dim,
+            dim=dim,
             num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-            bank_size=bank_size,
-            query_t=query_t
+            num_tokens=num_tokens,
+            num_prototypes=num_prototypes
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
         )
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim) if not flash_mlp else nn.Identity()
+        self.norm2 = norm_layer(dim) 
 
-        ffn_layer = FlashMlp if flash_mlp else Mlp
-        self.mlp = ffn_layer(
+        self.mlp = Mlp(
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
             act_layer=act_layer,
@@ -273,7 +170,7 @@ class Block(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x), threshold=self.sdp_threshold))
+            return self.ls1(self.attn(self.norm1(x)))
 
         def ffn_residual_func(x: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(x)))
@@ -292,7 +189,7 @@ class Block(nn.Module):
             )
         elif self.training and self.sample_drop_ratio > 0.0:
             x = x + self.drop_path1(attn_residual_func(x))
-            x = x + self.drop_path2(ffn_residual_func(x))  
+            x = x + self.drop_path2(ffn_residual_func(x))
         else:
             x = x + attn_residual_func(x)
             x = x + ffn_residual_func(x)
@@ -436,7 +333,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv12(nn.Module):
+class ContextViTv30(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -446,9 +343,7 @@ class ContextViTv12(nn.Module):
         depth=12,
         num_heads=6,
         mlp_ratio=4.0,
-        qkv_bias=False,
         ffn_bias=True,
-        proj_bias=True,
         drop_path_rate=0.0,
         drop_path_uniform=True,
         layerscale=None,
@@ -456,11 +351,9 @@ class ContextViTv12(nn.Module):
         act_layer=nn.GELU,
         token_drop=0,
         n_registers=0,
-        bank_size=64,
-        query_t=1,
-        flash_mlp=False,
         return_cls_only=True,
-        sdp_threshold=inf,
+        num_prototypes=200,
+        sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
     ):
         """
         Args:
@@ -481,16 +374,14 @@ class ContextViTv12(nn.Module):
             embed_layer (nn.Module): patch embedding layer
         """
         super().__init__()
-        assert bank_size >= 1, "bank_size needs to be 1 or more"
         self.num_features = self.embed_dim = embed_dim
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
         self.p_token_drop = token_drop
-        self.n_registers = bank_size - 1
-        self.bank_size = bank_size
+        self.n_registers = n_registers
         self.return_cls_only = return_cls_only
-        _ = n_registers
+        self.sdp_kernel = sdp_kernel
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -500,8 +391,8 @@ class ContextViTv12(nn.Module):
         )
         self.n_patches = self.patch_embed.n_patches
         self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        num_pos_emb = 1 + self.n_registers + self.n_patches
-        self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_pos_emb, embed_dim))
+        num_tokens = 1 + self.n_registers + self.n_patches
+        self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
@@ -515,17 +406,13 @@ class ContextViTv12(nn.Module):
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
                 ffn_bias=ffn_bias,
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                bank_size=bank_size,
-                query_t=query_t,
-                flash_mlp=flash_mlp,
-                sdp_threshold=sdp_threshold,
+                num_tokens=num_tokens,
+                num_prototypes=num_prototypes
             )
             for i in range(depth)
         ]
@@ -563,11 +450,13 @@ class ContextViTv12(nn.Module):
 
     def forward(self, x):
         x = self.prepare_tokens(x)
-        for blk in self.blocks:
-            x = blk(x)
+        with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
+            for blk in self.blocks:
+                x = blk(x)
         with torch.profiler.record_function("Final Norm"):
+            x = x[:, 0, :] if self.return_cls_only else x
             out = self.norm(x)
-        return out[:, 0, :] if self.return_cls_only else out
+        return out
 
 
 # # END

@@ -7,28 +7,9 @@ import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
-from modules.context_vit_moe_v2 import ContextMoeViTv2
-from modules.context_vit_v5 import ContextViTv5
-from modules.context_vit_v6 import ContextViTv6
-from modules.context_vit_v7 import ContextViTv7
-from modules.context_vit_v8 import ContextViTv8
-from modules.context_vit_v9 import ContextViTv9
-from modules.context_vit_v10 import ContextViTv10
-from modules.context_vit_v12 import ContextViTv12
-from modules.context_vit_v13 import ContextViTv13
-from modules.context_vit_v14 import ContextViTv14
-from modules.context_vit_v15 import ContextViTv15
-from modules.context_vit_v16 import ContextViTv16
-from modules.context_vit_v17 import ContextViTv17
-from modules.context_vit_v18 import ContextViTv18
 from modules.context_vit_v19 import ContextViTv19
-from modules.context_vit_v20 import ContextViTv20
 from modules.context_vit_v21 import ContextViTv21
-from modules.context_vit_v22 import ContextViTv22
-from modules.context_vit_v23 import ContextViTv23
-from modules.context_vit_v24 import ContextViTv24
-from modules.context_vit_v25 import ContextViTv25
-from modules.context_vit_v29 import ContextViTv29
+from modules.context_vit_v30 import ContextViTv30
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -38,28 +19,9 @@ from .utils import to_min, log_fig
 
 def get_arc(arc):
     return {"vit" : ViT,
-            "moev2" : ContextMoeViTv2,
-            "citv5" : ContextViTv5,
-            "citv6" : ContextViTv6,
-            "citv7" : ContextViTv7,
-            "citv8" : ContextViTv8,
-            "citv9" : ContextViTv9,
-            "citv10" : ContextViTv10,
-            "citv12" : ContextViTv12,
-            "citv13" : ContextViTv13,
-            "citv14" : ContextViTv14,
-            "citv15" : ContextViTv15,
-            "citv16" : ContextViTv16,
-            "citv17" : ContextViTv17,
-            "citv18" : ContextViTv18,
             "citv19" : ContextViTv19,
-            "citv20" : ContextViTv20,
             "citv21" : ContextViTv21,
-            "citv22" : ContextViTv22,
-            "citv23" : ContextViTv23,
-            "citv24" : ContextViTv24,
-            "citv25" : ContextViTv25,
-            "citv29" : ContextViTv29,
+            "citv30" : ContextViTv30,
             }[arc]
             
 
