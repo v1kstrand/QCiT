@@ -426,6 +426,7 @@ class ContextViTv26(nn.Module):
             hidden_features=int(embed_dim * mlp_ratio),
             act_layer=act_layer,
             bias=ffn_bias,
+            store_A=False
         )
         self.norm = norm_layer(embed_dim)
         self.init_weights()
