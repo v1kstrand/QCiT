@@ -45,6 +45,7 @@ class Mlp(nn.Module):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         drop: float = 0.0,
         bias: bool = True,
+        store_A = True
     ) -> None:
         super().__init__()
         out_features = out_features or in_features
@@ -53,14 +54,16 @@ class Mlp(nn.Module):
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
         self.drop = nn.Dropout(drop)
+        self.store_A = store_A
         self.A = None
         
     def set_A(self, A):
-        assert self.A is None
-        self.A = A
+        if self.store_A:
+            assert self.A is None
+            self.A = A
         
     def get_A(self):
-        assert self.A is not None
+        assert self.store_A and self.A is not None
         A = self.A
         self.A = None
         return A
@@ -71,8 +74,7 @@ class Mlp(nn.Module):
         x = self.drop(A)
         x = self.fc2(x)
         x = self.drop(x)
-        if set_A:
-            self.set_A(A)
+        self.set_A(A)
         return x
     
 class ContextAttention(nn.Module):
