@@ -21,7 +21,7 @@ def get_arc(arc):
     return {"vit" : ViT,
             "citv19" : ContextViTv19,
             "citv21" : ContextViTv21,
-            "citv32" : ContextViTv32,
+            "citv33" : ContextViTv33,
             }[arc]
             
 
