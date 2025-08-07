@@ -104,7 +104,7 @@ class ContextAttention(nn.Module):
         return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
 
 # # Block
-def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+def drop_path_(x, drop_prob: float = 0.0, training: bool = False):
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
@@ -114,6 +114,14 @@ def drop_path(x, drop_prob: float = 0.0, training: bool = False):
         random_tensor.div_(keep_prob)
     output = x * random_tensor
     return output
+
+def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+    if drop_prob == 0.0 or not training:
+        return x
+    keep = 1.0 - float(drop_prob)              # compile-time constant
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    mask = x.new_empty(shape, dtype=torch.float32).bernoulli_(keep).div_(keep).to(x.dtype)
+    return x * mask
 
 
 class DropPath(nn.Module):
@@ -195,7 +203,7 @@ class Block(nn.Module):
             )
         elif self.training and self.sample_drop_ratio > 0.0:
             x = x + self.drop_path1(attn_residual_func(x))
-            x = x + self.drop_path2(ffn_residual_func(x))  
+            x = x + self.drop_path2(ffn_residual_func(x))
         else:
             x = x + attn_residual_func(x)
             x = x + ffn_residual_func(x)
