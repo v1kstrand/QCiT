@@ -81,8 +81,9 @@ class ContextAttention(nn.Module):
         self.h_d = dim // num_heads
         self.n_proto = num_prototypes
         
-        self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_A = nn.Linear(num_tokens, num_prototypes, bias=proj_bias)
+        self.Q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_P_nm = nn.Linear(num_tokens, num_prototypes, bias=qkv_bias)
+        self.proj_P_dn = nn.Linear(dim, num_tokens, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
         
@@ -93,11 +94,10 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape 
         K, H, d = self.n_proto, self.n_h, self.h_d
         
-        x_q = self.proj_q(x) # [B, N, D]
-        A = self.proj_A(x.transpose(1, 2)) # [B, D, M]
-        W = F.softmax(A.transpose(1, 2) @ x.transpose(1, 2), -1) # [B, M, N]
-        ctx_k, ctx_v = self.proj_ctx(W @ x).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
+        P = self.proj_P_dn(self.proj_P_nm(x.transpose(-1, -2)).transpose(-1, -2)) # [B, M, N]
+        ctx_k, ctx_v = self.proj_ctx(F.softmax(P, -1) @ x).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
+        Q = self.Q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B, H, N, d]
+        x_attn = self.sdpa(Q, ctx_k, ctx_v) # [B, H, N, d]
         return self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)) # [B, N, D]
 
 # # Block
@@ -336,7 +336,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv33(nn.Module):
+class ContextViTv34(nn.Module):
     def __init__(
         self,
         img_size=224,
