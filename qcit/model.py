@@ -104,7 +104,7 @@ class PushGrad(nn.Module):
         self.optimizer = optimizer
         self.scaler = scaler
         self.args = args
-        self.gc = torch.tensor(self.args.opt["gc"])
+        self.gc = torch.tensor(self.optimizer.args["gc"])
 
     def forward(self, model, loss):
         self.scaler.scale(loss).backward()

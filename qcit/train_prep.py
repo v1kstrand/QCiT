@@ -80,7 +80,7 @@ def load_data(args):
 
 def load_model(args):
     for m in args.opt["log"]:
-        assert m in args.models, f"{m} in 'args.opt.log' but not in models"
+        assert m in args.models, f"{m} in 'args.opt.log' but not in models"        
     
     models = nn.ModuleDict()
     schedulers = {}
@@ -88,8 +88,12 @@ def load_model(args):
 
     for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
-        params = init_model(m, args, i == 0)
+        
+        opt_args = args.opt["models"][name] if name in args.opt["models"] else args.opt
+        params = init_model(m, opt_args, args, i == 0)
         opt = torch.optim.AdamW([*params.values()], fused=True)
+        opt.args = opt_args
+        
         exp = args.exp if name in args.opt["log"] else None
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
         scalers[name] = scaler = torch.amp.GradScaler("cuda")

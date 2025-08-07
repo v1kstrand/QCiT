@@ -8,11 +8,11 @@ import torch.profiler
 from .config import AMP_DTYPE
 from .utils import get_time, reset
 
-def init_model(model, args, print_out=False):
+def init_model(model, opt_args, args, print_out=False):
     print_fn = print if print_out else lambda x: None
-    base_lr = (args.opt["lr_peak"] * args.batch_size) / args.opt["lr_scale"]
-    wd = args.opt["wd_final"]
-    layer_decay = args.opt["ld"]
+    base_lr = (opt_args["lr_peak"] * args.batch_size) / opt_args["lr_scale"]
+    wd = opt_args["wd_final"]
+    layer_decay = opt_args["ld"]
     n_layers = args.vkw["n_layers"]
     
     reg_id, seen = set(), set()
@@ -68,12 +68,13 @@ class OptScheduler:
     def __init__(self, optimizer, args, exp=None, name=None, batch_to_step=True):
         self.optimizer = optimizer
         factor = args.steps_p_epoch if batch_to_step else 1
-        self.wu_steps = args.opt["steps_wu"] * factor
-        self.wu_start = args.opt["lr_init"]
-        self.dec_steps = args.opt["steps_dec"] * factor
-        self.lr_end = args.opt["lr_final"]
-        self.wd_start = args.opt["wd_init"]
-        self.wd_end = args.opt["wd_final"]
+        opt_args = optimizer.args
+        self.wu_steps = opt_args["steps_wu"] * factor
+        self.wu_start = opt_args["lr_init"]
+        self.dec_steps = opt_args["steps_dec"] * factor
+        self.lr_end = opt_args["lr_final"]
+        self.wd_start = opt_args["wd_init"]
+        self.wd_end = opt_args["wd_final"]
         self.curr_step = 1
         self.name = name
         self.exp = exp
