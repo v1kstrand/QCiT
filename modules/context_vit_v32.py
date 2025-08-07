@@ -340,7 +340,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv21(nn.Module):
+class ContextViTv32(nn.Module):
     def __init__(
         self,
         img_size=224,
