@@ -9,7 +9,7 @@ from timm.loss import SoftTargetCrossEntropy
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v19 import ContextViTv19
 from modules.context_vit_v21 import ContextViTv21
-from modules.context_vit_v32 import ContextViTv32
+from modules.context_vit_v33 import ContextViTv33
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
