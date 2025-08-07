@@ -72,9 +72,7 @@ class ContextAttention(nn.Module):
         num_prototypes: int = 128,
         num_heads: int = 6,
         qkv_bias: bool = False,
-        attn_drop: float = 0.0,
         proj_bias: bool = True,
-        proj_drop: float = 0.0,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -84,16 +82,12 @@ class ContextAttention(nn.Module):
         self.n_proto = num_prototypes
         
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_A = nn.Linear(num_tokens, num_prototypes, bias=qkv_bias)
+        self.proj_A = nn.Linear(num_tokens, num_prototypes, bias=proj_bias)
         self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
-
-        self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
         
     def sdpa(self, q, k, v):
-        dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        return F.scaled_dot_product_attention(q, k, v)
 
     def forward(self, x):
         B, N, D = x.shape 
@@ -101,10 +95,10 @@ class ContextAttention(nn.Module):
         
         x_q = self.proj_q(x) # [B, N, D]
         A = self.proj_A(x.transpose(1, 2)) # [B, D, M]
-        W = F.softmax(A.transpose(1, 2) @ x.transpose(1, 2)) / (D ** 0.5) # [B, M, N]
+        W = F.softmax(A.transpose(1, 2) @ x.transpose(1, 2), -1) # [B, M, N]
         ctx_k, ctx_v = self.proj_ctx(W @ x).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
         x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
-        return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
+        return self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)) # [B, N, D]
 
 # # Block
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
@@ -151,13 +145,11 @@ class Block(nn.Module):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = ContextAttention(
+            num_tokens,
             dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-            num_tokens=num_tokens,
             num_prototypes=num_prototypes,
         )
         self.ls1 = (
@@ -418,6 +410,7 @@ class ContextViTv33(nn.Module):
 
         blocks_list = [
             Block(
+                num_tokens,
                 dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
@@ -428,7 +421,6 @@ class ContextViTv33(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                num_tokens=num_tokens,
                 num_prototypes=num_prototypes,
             )
             for i in range(depth)
