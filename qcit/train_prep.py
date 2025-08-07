@@ -89,7 +89,7 @@ def load_model(args):
     for i, (name, kw) in enumerate(args.models.items()):
         models[name] = m = OuterModel(args, name, kw).cuda()
         
-        opt_args = args.opt["models"][name] if name in args.opt["models"] else args.opt
+        opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         params = init_model(m, opt_args, args, i == 0)
         opt = torch.optim.AdamW([*params.values()], fused=True)
         opt.args = opt_args
