@@ -36,7 +36,7 @@ def validate(model_dict, data_dict, args, exp):
         if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
             ratio = model.val_top1_acc / model.train_top1_acc
             exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
-    exp.log_metric(f"General/Time Val {args.opt["log"][0]}", to_min(val_time), step=curr_epoch)
+    exp.log_metric(f"General/Time Val {args.opt['log'][0]}", to_min(val_time), step=curr_epoch)
 
 def train_loop(model_dict, data_dict, args, exp, magic=10):
     models, sched = model_dict["models"], model_dict["schedulers"]
