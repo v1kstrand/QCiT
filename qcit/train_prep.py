@@ -86,7 +86,7 @@ def load_model(args):
     schedulers = {}
     scalers = {}
 
-    for i, (name, kw) in enumerate(args.models.items()):
+    for name, kw in args.models.items():
         models[name] = m = OuterModel(args, name, kw).cuda()
         
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
