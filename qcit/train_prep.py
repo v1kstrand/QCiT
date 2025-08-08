@@ -90,7 +90,7 @@ def load_model(args):
         models[name] = m = OuterModel(args, name, kw).cuda()
         
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
-        for k, v in args.opt["default"]:
+        for k, v in args.opt["default"].items():
             if k not in opt_args:
                 opt_args[k] = v
                 
