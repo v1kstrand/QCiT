@@ -93,8 +93,6 @@ def load_model(args):
         for k, v in args.opt["default"].items():
             if k not in opt_args:
                 opt_args[k] = v
-                
-        print(f"DEBUG: {name} opt_args - {opt_args}")
         
         params = init_model(m, opt_args, args, i == 0)
         opt = torch.optim.AdamW([*params.values()], fused=True)
