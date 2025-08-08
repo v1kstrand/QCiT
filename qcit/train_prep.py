@@ -94,7 +94,7 @@ def load_model(args):
             if k not in opt_args:
                 opt_args[k] = v
         
-        params = init_model(m, opt_args, args, i == 0)
+        params = init_model(m, opt_args, args, name in args.opt["log"])
         opt = torch.optim.AdamW([*params.values()], fused=True)
         opt.args = opt_args
         
