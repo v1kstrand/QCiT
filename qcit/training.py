@@ -14,9 +14,9 @@ from .utils import to_min, get_time
   
 @torch.no_grad()
 def validate(model_dict, data_dict, args, exp):
-    models, sched, loader = model_dict["models"], model_dict["schedulers"], data_dict["val_loader"]
+    (models, sched, _),  loader = model_dict.values(), data_dict["val_loader"]
     models.eval()
-    stats, val_time = {name: defaultdict(list) for name in models}, time.perf_counter()
+    stats, val_time = {n: defaultdict(list) for n in models}, time.perf_counter()
     curr_epoch = sched[args.opt["log"][0]].curr_step // args.steps_p_epoch
     
     for step, data in enumerate(loader):
@@ -39,7 +39,7 @@ def validate(model_dict, data_dict, args, exp):
     exp.log_metric(f"General/Time Val {args.opt['log'][0]}", to_min(val_time), step=curr_epoch)
 
 def train_loop(model_dict, data_dict, args, exp, magic=10):
-    models, sched = model_dict["models"], model_dict["schedulers"]
+    models, sched = model_dict["model"], model_dict["scheduler"]
     loader, tracker = data_dict["train_loader"], sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
@@ -56,7 +56,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
         for step, data in enumerate(loader, start=start_step):
             print(f"Epoch: {curr_epoch} - Step: {step} | Next Stats @ {next_stats} - Next Epoch @ {next_epoch} [{get_time()}]")
             if batch_time is not None and step % magic == 0:
-                exp.log_metric("General/Time Batch", to_min(batch_time), step=step)
+                exp.log_metric(f"General/Time Batch {tracker.name}", to_min(batch_time), step=step)
 
             _ = [o() for o in sched.values()]
             with torch.amp.autocast("cuda", dtype=AMP_DTYPE):
@@ -74,7 +74,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:
-                    exp.log_metric("General/Time Stat", to_min(stats_time), step=step)
+                    exp.log_metric(f"General/Time Stat {tracker.name}", to_min(stats_time), step=step)
                 save_model(model_dict, args, "model")
                 del stats
 

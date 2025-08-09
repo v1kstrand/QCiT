@@ -17,7 +17,7 @@ def init_model(model, opt_args, args, print_out=False):
     
     reg_id, seen = set(), set()
     for n, param in model.named_parameters():
-        if n.endswith(".bias") or len(param.shape) == 1:
+        if n.endswith(".bias") or len(param.shape) == 1 or hasattr(param, "no_wd"):
             continue
         reg_id.add(id(param))
         
@@ -172,9 +172,9 @@ def save_model(model_dict, args, file_name):
 
     torch.save(
         {
-            "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
-            "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
-            "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
+            "model": {n: m.state_dict() for n, m in model_dict["model"].items()},
+            "scheduler": {n: o.state_dict() for n, o in model_dict["scheduler"].items()},
+            "scaler": {n: s.state_dict() for n, s in model_dict["scaler"].items()},
         },
         save_path,
     )
@@ -192,9 +192,9 @@ def profile_model(model_dict, x, y, args):
     print("INFO: Performing Profiling")
 
     org_states = {
-        "model": {n: m.state_dict() for n, m in model_dict["models"].items()},
-        "optimizer": {n: o.state_dict() for n, o in model_dict["schedulers"].items()},
-        "scaler": {n: s.state_dict() for n, s in model_dict["scalers"].items()},
+        "model": {n: m.state_dict() for n, m in model_dict["model"].items()},
+        "scheduler": {n: o.state_dict() for n, o in model_dict["scheduler"].items()},
+        "scaler": {n: s.state_dict() for n, s in model_dict["scaler"].items()},
     }
 
     def run_profiling(model, model_name):
@@ -231,10 +231,10 @@ def profile_model(model_dict, x, y, args):
         reset(0)
         run_profiling(model, name)
 
-    schedulers = model_dict["schedulers"]
+    schedulers = model_dict["scheduler"]
     for n in models:
         models[n].load_state_dict(org_states["model"][n])
-        schedulers[n].load_state_dict(org_states["optimizer"][n])
+        schedulers[n].load_state_dict(org_states["scheduler"][n])
         models[n].backward.optimizer = schedulers[n].optimizer
         models[n].backward.scaler.load_state_dict(org_states["scaler"][n])
         

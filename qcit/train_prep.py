@@ -121,7 +121,11 @@ def load_model(args):
                 print(f"Warning: Model {n} not found in experiment")
                 continue
             models[n].load_state_dict(checkpoint["model"][n])
-            schedulers[n].load_state_dict(checkpoint["optimizer"][n])
+            if "scheduler" in checkpoint:
+                schedulers[n].load_state_dict(checkpoint["scheduler"][n])
+            else:
+                schedulers[n].load_state_dict(checkpoint["optimizer"][n])
+                
             models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
@@ -134,7 +138,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return {"models" : models, "schedulers" :schedulers, "scalers" : scalers}
+    return {"model" : models, "scheduler" :schedulers, "scaler" : scalers}
     
 def prep_training(dict_args, exp):
     reset(0)
