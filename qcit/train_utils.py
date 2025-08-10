@@ -18,6 +18,8 @@ def init_model(model, opt_args, args, print_out=False):
     reg_id, seen = set(), set()
     for n, param in model.named_parameters():
         if n.endswith(".bias") or len(param.shape) == 1 or hasattr(param, "no_wd"):
+            if hasattr(param, "no_wd"):
+                print(f"DEBUG: no wd - {n}")
             continue
         reg_id.add(id(param))
         
