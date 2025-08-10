@@ -111,7 +111,7 @@ class ContextAttention(nn.Module):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
 
-    def _film_logits_over_patches(self, cls, Zp):
+    def __film_logits_over_patches(self, cls, Zp):
         """
         cls: [B, D]
         Zp : [B, K, P]  (base logits over patches, after τ scaling & first stability step)
@@ -135,6 +135,32 @@ class ContextAttention(nn.Module):
 
         # compose and re-stabilize
         Zp_prime = Zp + g * ((a - 1.0) * Zp + a * b_patch)             # broadcast over K for b_patch
+        Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
+        return Zp_prime
+    
+    def _film_logits_over_patches(self, cls, Zp):
+        """
+        Minimal-safe FiLM: no RMS/STD, keep only (a) bound, (b) center+bound, (c) final stabilize.
+        cls: [B, D], Zp: [B, K, P]
+        """
+        B, K, P = Zp.shape
+
+        # single fused pass
+        film_out = self.film(cls.squeeze(1))                               # [B, K + P_init]
+        a_raw, b_raw = film_out[:, :K], film_out[:, K:]    # [B,K], [B,P_init]                            # slice for current P
+
+        # a: 1-centered, bounded scale (per-prototype, per-sample)
+        a = 1.0 + self.alpha * torch.tanh(a_raw).view(B, K, 1)  # [B,K,1]
+
+        # b: center to remove row-constant (softmax-invariant) + bound amplitude
+        b_patch = b_raw.unsqueeze(1)                            # [B,1,P]
+        b_patch = self.beta * torch.tanh(b_patch - b_patch.mean(-1, keepdim=True))
+
+        # tiny gate (keeps baseline intact at init)
+        g = torch.sigmoid(self.film_gate)                       # [1,K,1] or scalar
+
+        # compose + final stability
+        Zp_prime = Zp + g * ((a - 1.0) * Zp + a * b_patch)
         Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
         return Zp_prime
 
