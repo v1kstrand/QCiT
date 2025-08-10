@@ -68,7 +68,7 @@ def load_data(args):
         label_smoothing=args.kw["label_smoothing"],
         num_classes=NUM_CLASSES,
     )
-    
+
     args.steps_p_epoch = len(train_loader)
     print(f"INFO: Steps Per Epoch: {args.steps_p_epoch}")
     if args.print_samples > 0:
@@ -81,39 +81,39 @@ def load_data(args):
 def load_model(args):
     for m in args.opt["log"]:
         assert m in args.models, f"{m} in 'args.opt.log' but not in models"
-    
+
     models = nn.ModuleDict()
     schedulers = {}
     scalers = {}
 
     for name, kw in args.models.items():
         models[name] = m = OuterModel(args, name, kw).cuda()
-        
+
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         for k, v in args.opt["default"].items():
             if k not in opt_args:
                 opt_args[k] = v
-        
+
         params = init_model(m, opt_args, args, name in args.opt["log"])
         opt = torch.optim.AdamW([*params.values()], fused=True)
         opt.args = opt_args
-        
+
         exp = args.exp if name in args.opt["log"] else None
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
         scalers[name] = scaler = torch.amp.GradScaler("cuda")
         m.backward = PushGrad(opt, scaler, args)
         if hasattr(m.inner.model, "init"):
-            m.inner.model.init()
+            m.inner.model.init(name)
 
     checkpoint_path = args.checkpoint_path or (
         args.exp_dir / "model.pth" if (args.exp_dir / "model.pth").is_file() else None
     )
-
+    
     if checkpoint_path and not args.exp_init:
         print(f"INFO: Loading model from checkpoint: {checkpoint_path}")
         try:
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        except:
+        except Exception:
             assert checkpoint_path == args.exp_dir / "model.pth", "Loading failed"
             checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
         for n in checkpoint["model"]:
@@ -121,11 +121,7 @@ def load_model(args):
                 print(f"Warning: Model {n} not found in experiment")
                 continue
             models[n].load_state_dict(checkpoint["model"][n])
-            if "scheduler" in checkpoint:
-                schedulers[n].load_state_dict(checkpoint["scheduler"][n])
-            else:
-                schedulers[n].load_state_dict(checkpoint["optimizer"][n])
-                
+            schedulers[n].load_state_dict(checkpoint["scheduler"][n])
             models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
@@ -139,41 +135,39 @@ def load_model(args):
             m.compile_model()
 
     return {"model" : models, "scheduler" :schedulers, "scaler" : scalers}
-    
+
 def prep_training(dict_args, exp):
+    set_torch_config()
     reset(0)
     delete_in_parallel(num_threads=WORKERS)
-    set_torch_config()
-    
+
     args = get_args()
     for key, value in dict_args.items():
         if not hasattr(args, key):
             raise ValueError(f"{key} : {value} not found in args")
         setattr(args, key, value)
-    
+
     if not args.exp_dir:
         args.exp_dir = args.exp_root.replace("exp", args.exp_name)
     args.exp_dir = Path(args.exp_dir)
     args.exp_dir.mkdir(parents=True, exist_ok=True)
     args.exp_key = exp.get_key()
 
-    # Compiling cache
     if args.compile:
         if not args.exp_cache:
             args.exp_cache = str(args.exp_dir / "cache")
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = args.exp_cache
 
-    # Set config
     save_args = dict(sorted(vars(args).items()))
     save_args["exp_dir"] = str(save_args["exp_dir"])
     save_args["exp_init"] = save_args["profile_models"] = False
     args.save_args = save_args
     dump_args(args, args.exp_dir / "params")
-    
+
     exp.set_name(args.exp_name)
     exp.log_parameters(save_args)
     args.exp = exp
-    
+
     print("INFO: Args:")
     pprint(save_args)
     print(f"INFO: Setting up experiment: {exp.get_name()}, key: {args.exp_key}")

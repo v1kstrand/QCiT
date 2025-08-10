@@ -9,21 +9,20 @@ from timm.loss import SoftTargetCrossEntropy
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v19 import ContextViTv19
 from modules.context_vit_v21 import ContextViTv21
-from modules.context_vit_v35 import ContextViTv35
+from modules.context_vit_v36 import ContextViTv36
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min, log_fig
 
 
-
 def get_arc(arc):
     return {"vit" : ViT,
             "citv19" : ContextViTv19,
             "citv21" : ContextViTv21,
-            "citv35" : ContextViTv35,
+            "citv36" : ContextViTv36,
             }[arc]
-            
+
 
 class InnerModel(nn.Module):
     def __init__(self, args, outer):
@@ -56,7 +55,7 @@ class OuterModel(nn.Module):
 
     def forward(self, imgs, labels, cum_stats, mixup=False, time_it=None, profiling=False):
         stats = {}
-        
+
         if profiling:
             self.backward.zero()
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
@@ -64,20 +63,20 @@ class OuterModel(nn.Module):
             return
         if self.training:
             self.backward.zero()
-            
+
             if mixup and time_it in (0, 1):
                 torch.cuda.synchronize()
                 start_time = time.perf_counter()
-                
+
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
-            
+
             if mixup and time_it == 1:
                 torch.cuda.synchronize()
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
-            
+
             self.backward(self.inner, ce)
-            
+
             if mixup and time_it in (0, 1):
                 torch.cuda.synchronize()
                 if time_it == 1:
@@ -92,11 +91,11 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
-            
+
         for k, v in stats.items():
             cum_stats[k].append(v)
         del stats
-        
+ 
 
 class PushGrad(nn.Module):
     def __init__(self, optimizer, scaler, args):
@@ -123,7 +122,7 @@ def get_encoder(module, args, model):
         assert k in init_params, f"{k} not found in {model.name}"
         print(f"INFO: Assigning ({k} : {v}) to {model.name}")
     print(f"INFO: {model.name} initiated")
-    
+
     return module(
             patch_size=args.vkw["patch_size"],
             img_size=args.kw["img_size"],
@@ -163,4 +162,3 @@ def plot_heads_softmax(sample_W, title):
     fig.suptitle(title, fontsize=16)
     plt.subplots_adjust(top=0.90)  
     return fig
-

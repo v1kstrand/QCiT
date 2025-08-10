@@ -11,7 +11,7 @@ from .train_utils import save_model, dump_args, profile_model
 from .train_prep import prep_training
 from .utils import to_min, get_time
 
-  
+
 @torch.no_grad()
 def validate(model_dict, data_dict, args, exp):
     (models, sched, _),  loader = model_dict.values(), data_dict["val_loader"]
@@ -31,7 +31,7 @@ def validate(model_dict, data_dict, args, exp):
             exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step)
             if "Top-1" in k:
                 models[name].val_top1_acc = sum(v) / len(v)
-    
+
     for name, model in models.items():
         if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
             ratio = model.val_top1_acc / model.train_top1_acc
@@ -45,7 +45,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
 
     stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
-        
+
         # -- Epoch Start --
         curr_epoch = tracker.curr_step // args.steps_p_epoch
         next_epoch = tracker.curr_step + len(loader)
@@ -66,7 +66,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 time_it = step % args.freq["time_it"] if step > start_step + magic else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
-                    
+            
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():
@@ -81,10 +81,10 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 stats_time = time.perf_counter()
                 stats = {name: defaultdict(list) for name in models}
                 next_stats = tracker.curr_step + args.freq["stats"]
-                
+         
             if args.profile_models and mixup:
                 profile_model(model_dict, imgs, labels, args)
-                    
+           
             batch_time = time.perf_counter()
 
         # -- Epoch End --
@@ -102,8 +102,6 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
         ):
             validate(model_dict, data_dict, args, exp)
         dump_args(args, file_name="params")
-        
-        
 
 
 def start_training(dict_args):
