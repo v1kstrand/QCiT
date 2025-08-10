@@ -107,8 +107,9 @@ class PushGrad(nn.Module):
 
     def forward(self, model, loss):
         self.scaler.scale(loss).backward()
-        self.scaler.unscale_(self.optimizer)
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.gc)
+        if self.gc > 0:
+            self.scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.gc)
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.zero()
