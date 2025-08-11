@@ -18,7 +18,7 @@ def set_ema_sd(model):
     return ema_sd
 
 @torch.no_grad()
-def update_ema_sd(model, step, ramp=2000, start=0.9):
+def update_ema_sd(model, step, ramp=10000, start=0.9):
     t = min(1.0, step / ramp)
     decay = start + (model.args.kw["ema_base"] - start) * t   # 0.9 → 0.999
 
