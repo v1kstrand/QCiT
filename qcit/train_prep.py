@@ -130,6 +130,12 @@ def load_model(args):
             models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
             models[n].ema_sd = checkpoint["ema_sd"][n]
+            
+            for p in models[n].ema_sd["par"]:
+                p.cuda()
+            for b in models[n].ema_sd["buf"]:
+                b.cuda()
+                
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
     else:
         print("INFO: Initializing new model")
