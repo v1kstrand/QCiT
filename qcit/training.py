@@ -75,11 +75,6 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 time_it = step % args.freq["time_it"] if step > start_step + magic else None
                 for name, model in models.items():
                     model.forward(imgs, labels, stats[name], mixup, time_it=time_it)
-                    
-            for name, model in models.items():
-                update_ema_sd(model, sched[name].curr_step)
-                
-            save_model(model_dict, args, "model")
             
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
@@ -100,6 +95,8 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                 profile_model(model_dict, imgs, labels, args)
            
             batch_time = time.perf_counter()
+            for name, model in models.items():
+                update_ema_sd(model, sched[name].curr_step)
 
         # -- Epoch End --
         if not init_run:
