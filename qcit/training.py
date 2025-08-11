@@ -17,7 +17,7 @@ def validate(model_dict, data_dict, args, exp):
     (models, sched, _),  loader = model_dict.values(), data_dict["val_loader"]
     
     curr_sd = {}
-    for name, model in model.items():
+    for name, model in models.items():
         curr_sd[name] = model.state_dict()
         load_ema_sd(model)
         
@@ -44,7 +44,7 @@ def validate(model_dict, data_dict, args, exp):
             exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
     exp.log_metric(f"General/Time Val {args.opt['log'][0]}", to_min(val_time), step=curr_epoch)
     
-    for name, model in model.items():
+    for name, model in models.items():
         model.load_state_dict(curr_sd[name])
 
 def train_loop(model_dict, data_dict, args, exp, magic=10):
