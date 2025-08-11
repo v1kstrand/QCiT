@@ -164,10 +164,7 @@ def plot_attn(m):
             setattr(attn, k, None)
             
 def plot_heads_softmax(W, title="", max_rows=8):
-    
- 
     W = W.detach().float().cpu().numpy()
-
     H, N = W.shape
     H_plot = min(H, max_rows)
     W_plot = W[:H_plot].copy()
