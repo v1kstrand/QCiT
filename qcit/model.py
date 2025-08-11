@@ -165,11 +165,9 @@ def plot_attn(m):
             
 def plot_heads_softmax(W, title="", max_rows=8):
     W = W.detach().float().cpu().numpy()
-    assert isinstance(W, np.ndarray)
     H, N = W.shape
     H_plot = min(H, max_rows)
     W_plot = W[:H_plot].copy()
-    assert isinstance(W_plot, np.ndarray)
 
     # make the figure
     fig, axes = plt.subplots(H_plot, 1, figsize=(10, 2 * H_plot), squeeze=False)
@@ -186,7 +184,7 @@ def plot_heads_softmax(W, title="", max_rows=8):
     return fig
 
 
-def plot_heads_softmax(sample_W, title):
+def plot_heads_softmax_(sample_W, title):
     """
     
     """
