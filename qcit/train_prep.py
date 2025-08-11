@@ -133,8 +133,11 @@ def load_model(args):
             
             for p in models[n].ema_sd["par"].values():
                 p = p.cuda()
+                assert p.device == "cuda"
+                
             for b in models[n].ema_sd["buf"].values():
                 b = b.cuda()
+                assert b.device == "cuda"
                 
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
     else:
