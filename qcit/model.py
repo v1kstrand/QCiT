@@ -98,7 +98,7 @@ class OuterModel(nn.Module):
             cum_stats[k].append(v)
         del stats
         
-        plot_attn(self)
+        plot(self, self.name)
  
 
 class PushGrad(nn.Module):
@@ -146,71 +146,91 @@ def get_encoder(module, args, model):
 
 # PLOT Util
 
-def plot_attn(m):
+def plot(m, name, *, max_blocks=12, batch_idx=0, clear=True):
+    for k in ("log_a", "log_b", "log_z", "log_zf"):
+        fig = plot_fn(m, k, title=f"{name} — {k}", max_blocks=max_blocks, batch_idx=batch_idx)
+        if fig is not None:
+            log_fig(fig, f"{name}_{k}", m.args.exp)
+
+        if clear:
+            for blk in m.inner.model.blocks:
+                attn = getattr(blk, "attn", None)
+                if attn is not None and hasattr(attn, k):
+                    setattr(attn, k, None)
+
+           
+def plot_fn(m, k, title=None, max_blocks=12, batch_idx=0, vclip=(1, 99)):
+    """
+    Plot raw logits stored on each block's attn.<k> and return a single Figure.
+
+    Args:
+      m: model holder with m.inner.model.blocks[*].attn
+      k: "log_z", "log_zf", "log_a", or "log_b"
+      title: optional figure title
+      max_blocks: cap number of blocks to display
+      batch_idx: which batch element to visualize if tensor is batched
+      vclip: percentile clip (low, high) for heatmaps; None to disable
+    """
+    mats, block_ids = [], []
+
+    # collect per-block logged tensors (no softmax)
     for i, blk in enumerate(m.inner.model.blocks):
-        attn = blk.attn
-        for k in ("log_a", "log_b", "log_z", "log_zf"):
-            if not hasattr(attn, k) or getattr(attn, k) is None:
-                continue
-            w = getattr(attn, k)
-            if k == "log_zf" and w.dim() == 3:
-                A = torch.softmax(w, dim=-1)       # [B,K,P]
-                fig = plot_heads_softmax(A[0], f"Block {i} — A rows")
-                log_fig(fig, f"block_{i}_A", m.args.exp)
-            elif k in ("log_a", "log_b"):
-                v = w[0].unsqueeze(0) if w.dim() == 2 else w.unsqueeze(0)
-                fig = plot_heads_softmax(v, f"Block {i} — {k}")
-                log_fig(fig, f"block_{i}_{k}", m.args.exp)
-            setattr(attn, k, None)
-            
-def plot_heads_softmax(W, title="", max_rows=8):
-    W = W.detach().float().cpu().numpy()
-    H, N = W.shape
-    H_plot = min(H, max_rows)
-    W_plot = W[:H_plot].copy()
-    
-    # normalize if requested
-    def stable_softmax(x, axis=-1):
-        x = x - np.max(x, axis=axis, keepdims=True)
-        np.exp(x, out=x)
-        x_sum = np.sum(x, axis=axis, keepdims=True)
-        # avoid division by zero
-        x /= np.maximum(x_sum, 1e-12)
-        return x
+        attn = getattr(blk, "attn", None)
+        if attn is None or not hasattr(attn, k):
+            continue
+        w = getattr(attn, k)
+        if w is None:
+            continue
 
-    row_sums = W_plot.sum(axis=1)
-    if np.any(np.abs(row_sums - 1.0) > 1e-3) or np.any(W_plot < 0.0):
-        W_plot = stable_softmax(W_plot, axis=1)
-        
+        if isinstance(w, torch.Tensor):
+            w = w.detach().to("cpu").float()
+        else:
+            w = torch.as_tensor(w, dtype=torch.float32)
 
-    # make the figure
-    fig, axes = plt.subplots(H_plot, 1, figsize=(10, 2 * H_plot), squeeze=False)
-    for h in range(H_plot):
-        ax = axes[h, 0]
-        ax.bar(np.arange(N), W_plot[h])
-        ax.set_ylim(0, 1.0)
-        ax.set_xlim(-0.5, N - 0.5)
-        ax.set_ylabel('Prob.')
-        ax.set_title(f'Row {h}')
+        if w.ndim == 3:       # [B, K, P] logits
+            X = w[batch_idx]  # [K, P]
+        elif w.ndim == 2:     # [B, K] or [B, P]
+            X = w[batch_idx]  # [K] or [P]
+        elif w.ndim == 1:     # [K] or [P]
+            X = w
+        else:
+            continue
 
-    fig.suptitle(title, fontsize=14)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])  # leave room for suptitle
+        mats.append(X.numpy())
+        block_ids.append(i)
+        if len(mats) >= max_blocks:
+            break
+
+    if not mats:
+        return None
+
+    is_vector = (mats[0].ndim == 1)
+    n = len(mats)
+    fig, axes = plt.subplots(n, 1, figsize=(10, (2.0 if not is_vector else 2.2) * n), squeeze=False)
+
+    # robust color scaling for heatmaps
+    vmin = vmax = None
+    if not is_vector and vclip is not None:
+        all_vals = np.concatenate([x.ravel() for x in mats])
+        lo, hi = np.percentile(all_vals, [vclip[0], vclip[1]])
+        vmin, vmax = float(lo), float(hi)
+
+    for ax, X, i in zip(axes[:, 0], mats, block_ids):
+        if X.ndim == 1:
+            ax.bar(np.arange(X.shape[0]), X)
+            ax.set_xlim(-0.5, X.shape[0] - 0.5)
+            ax.set_ylabel('logit')
+        else:
+            im = ax.imshow(X, aspect='auto', interpolation='nearest',
+                           origin='upper', vmin=vmin, vmax=vmax)
+            cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+            cb.ax.set_ylabel('logit', rotation=270, labelpad=10)
+            ax.set_ylabel('K')
+
+        ax.set_title(f'Block {i} — {k}')
+        ax.set_xlabel('pos' if X.ndim == 1 else 'P')
+
+    fig.suptitle(title or f'{k} (raw logits) per block', fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
 
-
-def plot_heads_softmax_(sample_W, title):
-    """
-    
-    """
-    H, N = sample_W.shape
-    fig, axes = plt.subplots(H, 1, figsize=(10, 2 * H), squeeze=False)
-    for h in range(H):
-        ax = axes[h, 0]
-        ax.bar(range(N), sample_W[h])
-        ax.set_title(f'Softmax Distribution for Head {h}')
-        ax.set_xlabel('Token Index (N)')
-        ax.set_ylabel('Probability')
-    plt.tight_layout()
-    fig.suptitle(title, fontsize=16)
-    plt.subplots_adjust(top=0.90)  
-    return fig
