@@ -89,7 +89,7 @@ class ContextAttention(nn.Module):
         self.K   = num_prototypes
         self.R   = num_registers
         self.P   = num_tokens - num_registers
-        self.a_scale = math.log(self.a_scale)
+        self.a_scale = math.log(a_scale)
 
         self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
         
