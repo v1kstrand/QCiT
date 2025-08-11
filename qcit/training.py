@@ -78,6 +78,8 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
                     
             for name, model in models.items():
                 update_ema_sd(model, sched[name].curr_step)
+                
+            save_model(model_dict, args, "model")
             
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
