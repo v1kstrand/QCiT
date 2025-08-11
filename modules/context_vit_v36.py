@@ -95,7 +95,7 @@ class ContextAttention(nn.Module):
                                   nn.GELU(),
                                   nn.Linear(dim * 2, self.K + self.P))
 
-        self.film_gate = nn.Parameter(torch.full((1, self.K, 1), 0))
+        self.film_gate = nn.Parameter(torch.randn(1, self.K, 1))
         
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
