@@ -212,6 +212,7 @@ def save_model(model_dict, args, file_name):
             "model": {n: m.state_dict() for n, m in model_dict["model"].items()},
             "scheduler": {n: o.state_dict() for n, o in model_dict["scheduler"].items()},
             "scaler": {n: s.state_dict() for n, s in model_dict["scaler"].items()},
+            "ema_sd" : {n : m.ema_sd for n, m in model_dict["model"].items()}
         },
         save_path,
     )
