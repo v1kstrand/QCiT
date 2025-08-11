@@ -79,6 +79,7 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        a_scale = 4
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -88,6 +89,7 @@ class ContextAttention(nn.Module):
         self.K   = num_prototypes
         self.R   = num_registers
         self.P   = num_tokens - num_registers
+        self.a_scale = a_scale
 
         self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
         
@@ -108,7 +110,7 @@ class ContextAttention(nn.Module):
     
     def _film_logits_over_patches(self, cls, Zp):
         a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
-        a = F.softplus(a) + 1e-3
+        a = torch.exp(math.log(self.a_scale) * torch.tanh(a))
         Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1)
         return Zp_film
         
