@@ -102,16 +102,24 @@ class ContextAttention(nn.Module):
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
-
+        self.log_a = self.log_b = self.log_z = self.log_zf = None
         
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
     
+    
     def _film_logits_over_patches(self, cls, Zp):
         a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
         a = torch.exp(self.a_scale * torch.tanh(a))
         Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1)
+        
+        # logging
+        self.log_a = a
+        self.log_b = b
+        self.log_z = Zp
+        self.log_zf = Zp_film
+        
         return Zp_film
 
     def forward(self, x):

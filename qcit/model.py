@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 import torch.nn.functional as F
+import numpy as np
+
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
@@ -95,6 +97,8 @@ class OuterModel(nn.Module):
         for k, v in stats.items():
             cum_stats[k].append(v)
         del stats
+        
+        plot_attn(self)
  
 
 class PushGrad(nn.Module):
@@ -142,14 +146,53 @@ def get_encoder(module, args, model):
 
 # PLOT Util
 
+def plot_attn(m):
+    for i, blk in enumerate(m.inner.model.blocks):
+        attn = blk.attn
+        for k in ("log_a", "log_b", "log_z", "log_zf"):
+            if not hasattr(attn, k) or getattr(attn, k) is None:
+                continue
+            w = getattr(attn, k)
+            if k == "log_zf" and w.dim() == 3:
+                A = torch.softmax(w, dim=-1)       # [B,K,P]
+                fig = plot_heads_softmax(A[0], f"Block {i} — A rows")
+                log_fig(fig, f"block_{i}_A", m.args.exp)
+            elif k in ("log_a", "log_b"):
+                v = w[0].unsqueeze(0) if w.dim() == 2 else w.unsqueeze(0)
+                fig = plot_heads_softmax(v, f"Block {i} — {k}", normalize=False)
+                log_fig(fig, f"block_{i}_{k}", m.args.exp)
+            setattr(attn, k, None)
+            
+def plot_heads_softmax(W, title="", max_rows=8):
+    
+    # to numpy
+    if "torch" in str(type(W)):
+        W = W.detach().float().cpu().numpy()
+    else:
+        W = np.asarray(W, dtype=np.float32)
+
+    H, N = W.shape
+    H_plot = min(H, max_rows)
+    W_plot = W[:H_plot].copy()
+
+    # make the figure
+    fig, axes = plt.subplots(H_plot, 1, figsize=(10, 2 * H_plot), squeeze=False)
+    for h in range(H_plot):
+        ax = axes[h, 0]
+        ax.bar(np.arange(N), W_plot[h])
+        ax.set_ylim(0, 1.0)
+        ax.set_xlim(-0.5, N - 0.5)
+        ax.set_ylabel('Prob.')
+        ax.set_title(f'Row {h}')
+
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])  # leave room for suptitle
+    return fig
+
+
 def plot_heads_softmax(sample_W, title):
     """
-    for i, b in enumerate(self.inner.model.blocks):
-        if not hasattr(b.attn, "W"):
-            break
-        w = b.attn.W.cpu().numpy()
-        fig = plot_heads_softmax(w, f"Block {i}")
-        log_fig(fig, f"Block {i}", self.args.exp)
+    
     """
     H, N = sample_W.shape
     fig, axes = plt.subplots(H, 1, figsize=(10, 2 * H), squeeze=False)
