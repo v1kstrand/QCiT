@@ -79,7 +79,6 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        gate_init_val = 0.4
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -95,10 +94,8 @@ class ContextAttention(nn.Module):
         self.film = nn.Sequential(nn.Linear(dim, dim * 2),
                                   nn.GELU(),
                                   nn.Linear(dim * 2, self.K + self.P))
-        
-        gate_init = torch.logit(torch.tensor(gate_init_val))
-        self.film_gate = nn.Parameter(torch.full((1, self.K, 1), gate_init))
-        self.film_gate.no_wd = True
+
+        self.film_gate = nn.Parameter(torch.full((1, self.K, 1), 0))
         
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
