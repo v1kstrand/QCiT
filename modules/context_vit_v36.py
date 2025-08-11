@@ -114,11 +114,9 @@ class ContextAttention(nn.Module):
     def _film_logits_over_patches(self, cls, Zp):
         a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
         a = F.softplus(a) + 1e-3
-        Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1) 
-        g = torch.sigmoid(self.film_gate) 
-        Zp_prime = Zp * (1 - g) + Zp_film * g
-        Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
-        return Zp_prime
+        Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1)
+        g = torch.sigmoid(self.film_gate)
+        return Zp * (1 - g) + Zp_film * g
 
     def forward(self, x):
         """
@@ -126,9 +124,6 @@ class ContextAttention(nn.Module):
         """
         B, N, D = x.shape
         K, H, d, R = self.K, self.H, self.d, self.R
-        assert D == self.D
-
-        # split tokens
         cls  = x[:, :1, :]                 # [B,1,D]
         regs = x[:, 1:R, :]              # [B,R,D]
         xp   = x[:, R:, :]               # [B,P,D]
