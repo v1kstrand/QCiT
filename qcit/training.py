@@ -15,12 +15,12 @@ from .utils import to_min, get_time
 @torch.no_grad()
 def validate(model_dict, data_dict, args, exp):
     (models, sched, _),  loader = model_dict.values(), data_dict["val_loader"]
-    
+
     curr_sd = {}
     for name, model in models.items():
         curr_sd[name] = model.state_dict()
         load_ema_sd(model)
-        
+
     models.eval()
     stats, val_time = {n: defaultdict(list) for n in models}, time.perf_counter()
     curr_epoch = sched[args.opt["log"][0]].curr_step // args.steps_p_epoch
@@ -43,7 +43,7 @@ def validate(model_dict, data_dict, args, exp):
             ratio = model.val_top1_acc / model.train_top1_acc
             exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
     exp.log_metric(f"General/Time Val {args.opt['log'][0]}", to_min(val_time), step=curr_epoch)
-    
+
     for name, model in models.items():
         model.load_state_dict(curr_sd[name])
 
@@ -51,9 +51,6 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
     models, sched = model_dict["model"], model_dict["scheduler"]
     loader, tracker = data_dict["train_loader"], sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
-    
-    validate(model_dict, data_dict, args, exp)
-    assert False
 
     stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
