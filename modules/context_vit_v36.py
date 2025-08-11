@@ -480,9 +480,6 @@ class ContextViTv36(nn.Module):
             film = blk.attn.film
             with torch.no_grad():
                 film[-1].weight.normal_(0, 1e-5)
-                bias = film[-1].bias
-                bias[:self.num_prototypes].fill_(0.542)   # a ≈ 1.0 at init
-                bias[self.num_prototypes:].zero_()        # b ≈ 0 at init
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
@@ -523,35 +520,3 @@ class ContextViTv36(nn.Module):
 
 # # END
 
-
-"""
-    def _org_film_logits_over_patches(self, cls, Zp):
-        '''
-        Minimal-safe FiLM: no RMS/STD, keep only (a) bound, (b) center+bound, (c) final stabilize.
-        cls: [B, D], Zp: [B, K, P]
-        
-        
-        rmsZ = Zp.pow(2).mean(-1, keepdim=True).sqrt().detach().clamp_min(1e-3)  # [B,K,1]
-        b_patch = self.beta * torch.tanh(b_patch) * rmsZ             # bound amplitude
-        '''
-        B, K, P = Zp.shape
-
-        # single fused pass
-        film_out = torch.split(self.film(cls.squeeze(1)), ) # [B, K + P_init]
-        a_raw, b_raw = film_out[:, :K], film_out[:, K:]    # [B,K], [B,P_init]
-
-        # a: 1-centered, bounded scale (per-prototype, per-sample)
-        a = 1.0 + self.alpha * torch.tanh(a_raw).view(B, K, 1)  # [B,K,1]
-
-        # b: center to remove row-constant (softmax-invariant) + bound amplitude
-        b_patch = b_raw.unsqueeze(1)                            # [B,1,P]
-        b_patch = self.beta * torch.tanh(b_patch - b_patch.mean(-1, keepdim=True))
-
-        # tiny gate (keeps baseline intact at init)
-        g = torch.sigmoid(self.film_gate)                       # [1,K,1] or scalar
-
-        # compose + final stability
-        Zp_prime = Zp + g * ((a - 1.0) * Zp + a * b_patch)
-        Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
-        return Zp_prime
-""";
