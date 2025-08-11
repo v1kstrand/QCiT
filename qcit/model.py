@@ -165,11 +165,8 @@ def plot_attn(m):
             
 def plot_heads_softmax(W, title="", max_rows=8):
     
-    # to numpy
-    if "torch" in str(type(W)):
-        W = W.detach().float().cpu().numpy()
-    else:
-        W = np.asarray(W, dtype=np.float32)
+ 
+    W = W.detach().float().cpu().numpy()
 
     H, N = W.shape
     H_plot = min(H, max_rows)
