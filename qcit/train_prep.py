@@ -131,9 +131,9 @@ def load_model(args):
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
             models[n].ema_sd = checkpoint["ema_sd"][n]
             
-            for p in models[n].ema_sd["par"]:
+            for p in models[n].ema_sd["par"].values():
                 p.cuda()
-            for b in models[n].ema_sd["buf"]:
+            for b in models[n].ema_sd["buf"].values():
                 b.cuda()
                 
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
