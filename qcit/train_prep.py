@@ -128,7 +128,8 @@ def load_model(args):
             schedulers[n].load_state_dict(checkpoint["scheduler"][n])
             models[n].backward.optimizer = schedulers[n].optimizer
             models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
-            models[n].ema_sd = checkpoint["ema_sd"][n]
+            if "ema_sd" in checkpoint:
+                models[n].ema_sd = checkpoint["ema_sd"][n]
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
     else:
         print("INFO: Initializing new model")
