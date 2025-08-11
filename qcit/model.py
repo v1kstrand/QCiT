@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from inspect import signature
 import matplotlib.pyplot as plt
 import torch
@@ -16,6 +17,7 @@ from modules.context_vit_v36 import ContextViTv36
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min, log_fig
+from .train_utils import set_ema_sd
 
 
 def get_arc(arc):
@@ -51,6 +53,7 @@ class OuterModel(nn.Module):
         self.kw = kw
         self.inner = InnerModel(args, self)
         self.last_top1 = self.backward = None
+        self.ema_sd = set_ema_sd(self)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)

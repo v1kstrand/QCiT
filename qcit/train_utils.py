@@ -8,6 +8,42 @@ import torch.profiler
 from .config import AMP_DTYPE
 from .utils import get_time, reset
 
+def set_ema_sd(model):
+    ema_sd = {"par":{}, "buf":{}}
+    for n, t in model.named_parameters():
+        ema_sd["par"][n] = t.detach().to(torch.float32).clone()
+    for n, b in model.named_buffers():
+        ema_sd["buf"][n] = b.detach().clone()
+    return ema_sd
+
+@torch.no_grad()
+def update_ema_sd(model, step, ramp=2000, start=0.9):
+    t = min(1.0, step / ramp)
+    decay = start + (model.args.kw["ema_base"] - start) * t   # 0.9 → 0.999
+    
+    ema_sd = model.ema_sd
+    for n, p in model.named_parameters():
+        e = ema_sd["par"][n]
+        ema_sd["par"][n].mul_(decay).add_(p.detach().to(e.dtype), alpha=1.0 - decay)
+
+    for n, b in model.named_buffers():
+        ema_sd["buf"][n].copy_(b.detach())
+        
+@torch.no_grad()
+def load_ema_sd(model):
+    curr_sd = model.state_dict()
+    ema_sd = model.ema_sd
+    aligned = {}
+    for n, p in ema_sd["par"].items():
+        rt = curr_sd[n]
+        aligned[n] = p.to(device=rt.device, dtype=rt.dtype)
+        
+    for n, p in ema_sd["buf"].items():
+        rt = curr_sd[n]
+        aligned[n] = p.to(device=rt.device, dtype=rt.dtype)
+        
+    model.load_state_dict(aligned, strict=True)
+
 def init_model(model, opt_args, args, print_out=False):
     print_fn = print if print_out else lambda x: None
     base_lr = (opt_args["lr_peak"] * args.batch_size) / opt_args["lr_scale"]
