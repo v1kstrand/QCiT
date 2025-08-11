@@ -168,6 +168,20 @@ def plot_heads_softmax(W, title="", max_rows=8):
     H, N = W.shape
     H_plot = min(H, max_rows)
     W_plot = W[:H_plot].copy()
+    
+    # normalize if requested
+    def stable_softmax(x, axis=-1):
+        x = x - np.max(x, axis=axis, keepdims=True)
+        np.exp(x, out=x)
+        x_sum = np.sum(x, axis=axis, keepdims=True)
+        # avoid division by zero
+        x /= np.maximum(x_sum, 1e-12)
+        return x
+
+    row_sums = W_plot.sum(axis=1)
+    if np.any(np.abs(row_sums - 1.0) > 1e-3) or np.any(W_plot < 0.0):
+        W_plot = stable_softmax(W_plot, axis=1)
+        
 
     # make the figure
     fig, axes = plt.subplots(H_plot, 1, figsize=(10, 2 * H_plot), squeeze=False)
