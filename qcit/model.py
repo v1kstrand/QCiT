@@ -169,6 +169,7 @@ def plot_heads_softmax(W, title="", max_rows=8):
     H, N = W.shape
     H_plot = min(H, max_rows)
     W_plot = W[:H_plot].copy()
+    assert isinstance(W_plot, np.ndarray)
 
     # make the figure
     fig, axes = plt.subplots(H_plot, 1, figsize=(10, 2 * H_plot), squeeze=False)
