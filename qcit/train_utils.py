@@ -8,6 +8,7 @@ import torch.profiler
 from .config import AMP_DTYPE
 from .utils import get_time, reset
 
+@torch.no_grad()
 def set_ema_sd(model):
     ema_sd = {"par":{}, "buf":{}}
     for n, t in model.named_parameters():
