@@ -159,7 +159,7 @@ def plot_attn(m):
                 log_fig(fig, f"block_{i}_A", m.args.exp)
             elif k in ("log_a", "log_b"):
                 v = w[0].unsqueeze(0) if w.dim() == 2 else w.unsqueeze(0)
-                fig = plot_heads_softmax(v, f"Block {i} — {k}", normalize=False)
+                fig = plot_heads_softmax(v, f"Block {i} — {k}")
                 log_fig(fig, f"block_{i}_{k}", m.args.exp)
             setattr(attn, k, None)
             
