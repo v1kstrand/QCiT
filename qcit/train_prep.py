@@ -132,9 +132,9 @@ def load_model(args):
             models[n].ema_sd = checkpoint["ema_sd"][n]
             
             for p in models[n].ema_sd["par"].values():
-                p.cuda()
+                p = p.cuda()
             for b in models[n].ema_sd["buf"].values():
-                b.cuda()
+                b = b.cuda()
                 
             print(f"INFO: Checkpoint ({n}) Successfully Loaded")
     else:

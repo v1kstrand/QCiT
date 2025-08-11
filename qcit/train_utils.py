@@ -21,17 +21,15 @@ def set_ema_sd(model):
 def update_ema_sd(model, step, ramp=2000, start=0.9):
     t = min(1.0, step / ramp)
     decay = start + (model.args.kw["ema_base"] - start) * t   # 0.9 → 0.999
-    
+
     ema_sd = model.ema_sd
     for n, p in model.named_parameters():
-        ema_sd["par"][n].cuda()
         e = ema_sd["par"][n]
         ema_sd["par"][n].mul_(decay).add_(p.detach().to(e.dtype), alpha=1.0 - decay)
 
     for n, b in model.named_buffers():
-        ema_sd["buf"][n].cuda()
         ema_sd["buf"][n].copy_(b.detach())
-        
+
 @torch.no_grad()
 def load_ema_sd(model):
     curr_sd = model.state_dict()
