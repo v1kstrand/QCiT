@@ -79,7 +79,8 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        a_scale = 4
+        a_scale = 4,
+        gate_init_val = 0.4
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -89,7 +90,6 @@ class ContextAttention(nn.Module):
         self.K   = num_prototypes
         self.R   = num_registers
         self.P   = num_tokens - num_registers
-        self.a_scale = math.log(a_scale)
 
         self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
         
@@ -111,14 +111,13 @@ class ContextAttention(nn.Module):
     
     def _film_logits_over_patches(self, cls, Zp):
         a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
-        a = torch.exp(self.a_scale * torch.tanh(a))
         Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1)
         
         # logging
-        self.log_a = a
+        """self.log_a = a
         self.log_b = b
         self.log_z = Zp
-        self.log_zf = Zp_film
+        self.log_zf = Zp_film"""
         
         return Zp_film
 
@@ -487,6 +486,9 @@ class ContextViTv36(nn.Module):
             film = blk.attn.film
             with torch.no_grad():
                 film[-1].weight.normal_(0, 1e-5)
+                bias = film[-1].bias
+                bias[:self.num_prototypes].fill_(1)   # a ≈ 1.0 at init
+                bias[self.num_prototypes:].zero_()        # b ≈ 0 at init
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)

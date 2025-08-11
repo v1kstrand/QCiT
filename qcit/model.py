@@ -98,7 +98,7 @@ class OuterModel(nn.Module):
             cum_stats[k].append(v)
         del stats
         
-        plot(self, self.name)
+        #plot(self, self.name)
  
 
 class PushGrad(nn.Module):
