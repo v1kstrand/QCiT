@@ -94,8 +94,6 @@ class ContextAttention(nn.Module):
         self.film = nn.Sequential(nn.Linear(dim, dim * 2),
                                   nn.GELU(),
                                   nn.Linear(dim * 2, self.K + self.P))
-
-        self.film_gate = nn.Parameter(torch.randn(1, self.K, 1))
         
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
