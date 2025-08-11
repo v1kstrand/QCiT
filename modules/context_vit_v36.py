@@ -482,7 +482,7 @@ class ContextViTv36(nn.Module):
         for blk in self.blocks:
             film = blk.attn.film
             with torch.no_grad():
-                film[-1].weight.normal_(0, 1e-4)
+                film[-1].weight.normal_(0, 1e-5)
                 bias = film[-1].bias
                 bias[:self.num_prototypes].fill_(0.542)   # a ≈ 1.0 at init
                 bias[self.num_prototypes:].zero_()        # b ≈ 0 at init
