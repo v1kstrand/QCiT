@@ -10,7 +10,7 @@ from modules.utils import IdleMonitor, delete_in_parallel
 from .model import OuterModel, PushGrad
 from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, set_torch_config
 from .data import HFImageDataset
-from .train_utils import init_model, OptScheduler, dump_args
+from .train_utils import init_model, OptScheduler, dump_args, set_ema_sd
 from .utils import plot_data, reset
 
 
@@ -92,6 +92,7 @@ def load_model(args):
 
     for name, kw in args.models.items():
         models[name] = m = OuterModel(args, name, kw).cuda()
+        m.ema_sd = set_ema_sd(m)
 
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         for k, v in args.opt["default"].items():
