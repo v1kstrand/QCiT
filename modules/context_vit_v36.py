@@ -72,15 +72,14 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         num_tokens: int,
-        num_registers: int,
+        num_registers: int, # including cls
         num_prototypes: int = 128,   # K
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        alpha: float = 0.5,          # bound for a (FiLM scale), a ∈ [1-α, 1+α]
-        beta: float = 0.25            # strength for b_patch (FiLM prior)
+        gate_init_val = 0.4
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -89,66 +88,35 @@ class ContextAttention(nn.Module):
         self.d   = dim // num_heads
         self.K   = num_prototypes
         self.R   = num_registers
-        self.P = num_tokens - num_registers
+        self.P   = num_tokens - num_registers
 
-        # projections
         self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
-        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)       # K/V from slots
+        
+        self.film = nn.Sequential(nn.Linear(dim, dim * 2),
+                                  nn.GELU(),
+                                  nn.Linear(dim * 2, self.K + self.P))
+        
+        gate_init = torch.logit(torch.tensor(gate_init_val))
+        self.film_gate = nn.Parameter(torch.full((1, self.K, 1), gate_init))
+        self.film_gate.no_wd = True
+        
+        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
 
-        # ---- FiLM heads (fused) ----
-        self.film = nn.Linear(dim, self.K + self.P, bias=True)
-        self.cls_to_w = nn.Sequential(nn.Linear(dim, dim * 2),
-                                      nn.GELU(),
-                                      nn.Linear(dim * 2, self.K + self.P))
-        self.film.weight.no_wd = self.film.bias.no_wd = True  
-        self.register_buffer("alpha", torch.tensor(float(alpha)))
-        self.register_buffer("beta",  torch.tensor(float(beta)))
-        self.film_gate = nn.Parameter(torch.full((1, self.K, 1), -4.0))
-        self.film_gate.no_wd = True
-
+        
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
     
     def _film_logits_over_patches(self, cls, Zp):
-        a, b = self.film(cls.squeeze(1), (self.K, self.P))
-        g = torch.sigmoid(self.film_gate)                       # [1,K,1] or scalar
-        Zp_film = (a - 1) * Zp + b
+        a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
+        a = F.softplus(a) + 1e-3
+        Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1) 
+        g = torch.sigmoid(self.film_gate) 
         Zp_prime = Zp * (1 - g) + Zp_film * g
-        Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
-        return Zp_prime
-    
-    def _org_film_logits_over_patches(self, cls, Zp):
-        """
-        Minimal-safe FiLM: no RMS/STD, keep only (a) bound, (b) center+bound, (c) final stabilize.
-        cls: [B, D], Zp: [B, K, P]
-        
-        
-        rmsZ = Zp.pow(2).mean(-1, keepdim=True).sqrt().detach().clamp_min(1e-3)  # [B,K,1]
-        b_patch = self.beta * torch.tanh(b_patch) * rmsZ             # bound amplitude
-        """
-        B, K, P = Zp.shape
-
-        # single fused pass
-        film_out = torch.split(self.film(cls.squeeze(1)), ) # [B, K + P_init]
-        a_raw, b_raw = film_out[:, :K], film_out[:, K:]    # [B,K], [B,P_init]
-
-        # a: 1-centered, bounded scale (per-prototype, per-sample)
-        a = 1.0 + self.alpha * torch.tanh(a_raw).view(B, K, 1)  # [B,K,1]
-
-        # b: center to remove row-constant (softmax-invariant) + bound amplitude
-        b_patch = b_raw.unsqueeze(1)                            # [B,1,P]
-        b_patch = self.beta * torch.tanh(b_patch - b_patch.mean(-1, keepdim=True))
-
-        # tiny gate (keeps baseline intact at init)
-        g = torch.sigmoid(self.film_gate)                       # [1,K,1] or scalar
-
-        # compose + final stability
-        Zp_prime = Zp + g * ((a - 1.0) * Zp + a * b_patch)
         Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
         return Zp_prime
 
@@ -167,27 +135,17 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
 
-        # projections
-        xq, w_x = torch.split(self.proj_x(x), (D, K), dim=-1)      # [B,N,D], [B,N,K]
-
-        # ----- pool patches only -----
-        Zp = w_x[:, R:, :].transpose(1, 2)                       # [B,K,P]
-        Zp = self._film_logits_over_patches(cls, Zp)    # cls: [B,D]
-
-        # soft assignments A over patches
-        A = F.softmax(Zp, dim=-1)                                  # [B,K,P]; rows sum to 1
-        ctx_proto = A @ xp                                         # [B,K,D]
-
-        # ---- concatenate CLS & REGS as extra KV slots ----
-        ctx_all = torch.cat([cls, regs, ctx_proto], dim=1)         # [B, R+K, D]
-
-        # keys/vals from slots, queries from all tokens
-        k, v = self.proj_ctx(ctx_all).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        q = xq.view(B, N, H, d).transpose(1, 2).contiguous()       # [B,H,N,d]
-
-        y = self.sdpa(q, k, v)                                     # [B,H,N,d]
-        y = y.transpose(1, 2).reshape(B, N, D)
-        return self.out_drop(self.proj_out(y))
+        xq, w_x = torch.split(self.proj_x(x), (D, K), dim=-1)# [B,N,D], [B,N,K]
+        Zp = w_x[:, R:, :].transpose(1, 2) # [B,K,P]
+        Zp_prime = self._film_logits_over_patches(cls, Zp) # [B,K,P]
+        
+        ctx_patch = F.softmax(Zp_prime, dim=-1) @ xp # [B,K,D]
+        ctx = torch.cat([cls, regs, ctx_patch], dim=1) # [B, R+K, D]
+        
+        k, v = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        q = xq.view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
+        return self.out_drop(self.proj_out(y)) # [B,N,D]
 
 
 # # Block
@@ -527,8 +485,12 @@ class ContextViTv36(nn.Module):
         name = name or self.__class__.__name__
         print(f"INFO: init {name}")
         for blk in self.blocks:
-            nn.init.zeros_(blk.attn.film.weight)
-            nn.init.zeros_(blk.attn.film.bias)
+            film = blk.attn.film
+            with torch.no_grad():
+                film[-1].weight.normal_(0, 1e-4)
+                bias = film[-1].bias
+                bias[:self.num_prototypes].fill_(0.542)   # a ≈ 1.0 at init
+                bias[self.num_prototypes:].zero_()        # b ≈ 0 at init
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
@@ -568,3 +530,36 @@ class ContextViTv36(nn.Module):
 
 
 # # END
+
+
+"""
+    def _org_film_logits_over_patches(self, cls, Zp):
+        '''
+        Minimal-safe FiLM: no RMS/STD, keep only (a) bound, (b) center+bound, (c) final stabilize.
+        cls: [B, D], Zp: [B, K, P]
+        
+        
+        rmsZ = Zp.pow(2).mean(-1, keepdim=True).sqrt().detach().clamp_min(1e-3)  # [B,K,1]
+        b_patch = self.beta * torch.tanh(b_patch) * rmsZ             # bound amplitude
+        '''
+        B, K, P = Zp.shape
+
+        # single fused pass
+        film_out = torch.split(self.film(cls.squeeze(1)), ) # [B, K + P_init]
+        a_raw, b_raw = film_out[:, :K], film_out[:, K:]    # [B,K], [B,P_init]
+
+        # a: 1-centered, bounded scale (per-prototype, per-sample)
+        a = 1.0 + self.alpha * torch.tanh(a_raw).view(B, K, 1)  # [B,K,1]
+
+        # b: center to remove row-constant (softmax-invariant) + bound amplitude
+        b_patch = b_raw.unsqueeze(1)                            # [B,1,P]
+        b_patch = self.beta * torch.tanh(b_patch - b_patch.mean(-1, keepdim=True))
+
+        # tiny gate (keeps baseline intact at init)
+        g = torch.sigmoid(self.film_gate)                       # [1,K,1] or scalar
+
+        # compose + final stability
+        Zp_prime = Zp + g * ((a - 1.0) * Zp + a * b_patch)
+        Zp_prime = Zp_prime - Zp_prime.amax(dim=-1, keepdim=True)
+        return Zp_prime
+""";
