@@ -115,8 +115,8 @@ class ContextAttention(nn.Module):
         a, b = torch.split(self.film(cls.squeeze(1)), (self.K, self.P), dim=-1)
         a = F.softplus(a) + 1e-3
         Zp_film = a.unsqueeze(2) * Zp + b.unsqueeze(1)
-        g = torch.sigmoid(self.film_gate)
-        return Zp * (1 - g) + Zp_film * g
+        return Zp_film
+        
 
     def forward(self, x):
         """
