@@ -104,11 +104,8 @@ class ContextAttention(nn.Module):
              self.noise_max = noise_scale = noise_kw["max"]
              self.noise_min = noise_kw["min"]
              self.noise_steps = noise_kw["steps"]
-        self.noise_step = 0
 
-        # ---- EMA centroid router (no-grad) ----
         self.ema_m = ema_momentum
-        # orthogonal-ish, unit-norm init for centroids: [M, D]
         with torch.no_grad():
             A = torch.randn(self.D, self.M, dtype=torch.float32)
             Q, _ = torch.linalg.qr(A, mode="reduced")      # [D, M]
@@ -117,22 +114,21 @@ class ContextAttention(nn.Module):
             self.register_buffer("sum_buf",  torch.zeros(self.M, self.D)) # fp32
             self.register_buffer("cnt_buf",  torch.zeros(self.M))         # fp32
             self.register_buffer("noise_scale",  torch.tensor(noise_scale))         # fp32
+            self.register_buffer("noise_step",  torch.tensor(0, dtype=torch.int64))
             trunc_normal_(self.Q_banks, std=0.02)
             
     @torch.no_grad()
-    def noise_schedule(self):
+    def _noise_schedule(self):
         S = max(1, int(self.noise_steps))                   # avoid div-by-zero
         s = min(int(self.noise_step), S)                    # clamp
         t = s / S                                           # 0..1 progress
-        # lerp from max to min
         val = self.noise_min + (self.noise_max - self.noise_min) * (1.0 - t)
-        # write into 0-D buffer (dtype/device-safe)
         self.noise_scale.copy_(self.noise_scale.new_tensor(val))
-        self.noise_step = s + 1
+        self.noise_step.add_(1)
         
         
     @torch.no_grad()
-    def ema_update(self, cls_n, idx):
+    def _ema_update(self, cls_n, idx):
         self.sum_buf.zero_().index_add_(0, idx, cls_n)      # [M, D]
         ones = torch.ones_like(idx, dtype=self.sum_buf.dtype)
         self.cnt_buf.zero_().index_add_(0, idx, ones)       # [M]
@@ -142,9 +138,8 @@ class ContextAttention(nn.Module):
             upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
             self.centroids[used].copy_(upd)
             
-                
     @torch.no_grad()
-    def route(self, cls):
+    def _route(self, cls):
         cls_n = F.normalize(cls, dim=-1)                          # dtype = activations (bf16/fp16/fp32)
         cent  = self.centroids.to(cls_n.dtype)                    # cast view for matmul
         sims  = cls_n @ cent.t()                                  # stays in activation dtype
@@ -167,20 +162,13 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
 
-        # --- hard bank selection via EMA centroids (no gradients) ---
-        cls_n, idx   = self.route(x[:, 0, :])              # [B]
+        cls_n, idx   = self._route(x[:, 0, :])              # [B]
         q_ctx = self.Q_banks.index_select(0, idx)               # [B, K, D]
-
-        # --- your original pooling: (q @ xp^T) @ xp  -> [B, K, D] ---
-        # shapes: q_ctx [B,K,D], xp^T [B,D,P] => [B,K,P] ; then @ xp [B,P,D] => [B,K,D]
         ctx_p = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp        # [B, K, D]
         ctx   = torch.cat([xreg, ctx_p], dim=1)                 # [B, R+K, D]
-
-        # --- standard cross-attention to ctx ---
         ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v   = ctx_kv[0], ctx_kv[1] # [B, H, R+K, d]
         q      = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous()  # [B,H,N,d]
-
         y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
         return self.out_drop(self.proj_out(y)), cls_n, idx                   # [B, N, D]
     
@@ -504,7 +492,6 @@ class ContextViTv39(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
-            dpr[-1] = drop_path_rate
 
         blocks_list = [
             Block(
@@ -549,8 +536,9 @@ class ContextViTv39(nn.Module):
     def update(self, cache):
         for i, blk in enumerate(self.blocks):
             cls_n, idx = cache[i]
-            blk.attn.ema_update(cls_n, idx)
-            blk.attn.noise_schedule()
+            blk.attn._ema_update(cls_n, idx)
+            blk.attn._noise_schedule()
+            
 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
