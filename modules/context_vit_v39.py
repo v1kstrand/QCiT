@@ -492,6 +492,7 @@ class ContextViTv39(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+            dpr[-1] = drop_path_rate
 
         blocks_list = [
             Block(
