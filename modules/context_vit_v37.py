@@ -88,6 +88,7 @@ class ContextAttention(nn.Module):
         self.R   = num_registers
 
         self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
+        self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 

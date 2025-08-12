@@ -86,7 +86,7 @@ class ContextAttention(nn.Module):
         self.K   = num_prototypes
         self.R   = num_registers
         
-        self.Q_bank = nn.Parameter(torch.randn(1, 1, num_prototypes, dim))
+        self.Q_bank = nn.Parameter(torch.randn(1, num_prototypes, dim))
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)   # [B,N,D+K]
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -98,7 +98,7 @@ class ContextAttention(nn.Module):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
 
-    def forward(self, x):
+    def _forward(self, x):
         """
         x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
         """
@@ -112,6 +112,27 @@ class ContextAttention(nn.Module):
         q_ctx = self.Q_bank.expand(B, -1, -1, -1)  # [B,1,K,D]
         k_ctx, v_ctx = xp.unsqueeze(1), xp.unsqueeze(1)  # [B,1,N,D]
         ctx_p = F.scaled_dot_product_attention(q_ctx, k_ctx, v_ctx, scale=1.0)  # [B,1,K,D]
+        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
+        
+        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v = ctx_kv[0], ctx_kv[1]
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
+        return self.out_drop(self.proj_out(y)) # [B,N,D]
+    
+    def forward(self, x):
+        """
+        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
+        """
+        B, N, D = x.shape
+        K, H, d, R = self.K, self.H, self.d, self.R
+        xreg = x[:, :R, :]              # [B,R,D]
+        xp   = x[:, R:, :]               # [B,P,D]
+        P = xp.size(1)
+        assert R + P == N
+        
+        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,1,K,D]
+        ctx_p = (q_ctx @ xp.T) @ xp
         ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
         
         ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
