@@ -10,7 +10,6 @@ import numpy as np
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
-from other.context_vit_v21 import ContextViTv21
 from modules.context_vit_v37 import ContextViTv37
 from modules.context_vit_v38 import ContextViTv38
 
@@ -21,7 +20,6 @@ from .utils import to_min, log_fig
 
 def get_arc(arc):
     return {"vit" : ViT,
-            "citv21" : ContextViTv21,
             "citv37" : ContextViTv37,
             "citv38" : ContextViTv38,
             }[arc]
