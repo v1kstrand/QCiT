@@ -505,7 +505,6 @@ class ContextViTv39(nn.Module):
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
             dpr[-1] = drop_path_rate
-            print("DEBUG:", dpr)
 
         blocks_list = [
             Block(
