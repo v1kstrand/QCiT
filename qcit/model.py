@@ -70,13 +70,17 @@ class OuterModel(nn.Module):
                 start_time = time.perf_counter()
 
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
-
+            if len(ce) == 2:
+                ce, cache = ce
+                
             if mixup and time_it == 1:
                 torch.cuda.synchronize()
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
 
             self.backward(self.inner, ce)
+            if hasattr(self.inner.model, "update"):
+                self.inner.model.update(cache)
 
             if mixup and time_it in (0, 1):
                 torch.cuda.synchronize()
