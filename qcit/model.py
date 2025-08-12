@@ -41,7 +41,7 @@ class InnerModel(nn.Module):
             
         pred = self.clsf_out(out)
         if self.training and mixup:
-            return self.criterion(pred, labels), None, None
+            return self.criterion(pred, labels), None, None, cache
         ce = F.cross_entropy(pred, labels, label_smoothing=self.ls)
         acc1, acc5 = accuracy(pred, labels, topk=(1, 5))
         return ce, acc1, acc5, cache
@@ -91,7 +91,7 @@ class OuterModel(nn.Module):
                 else:
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
         else:
-            ce, acc1, acc5 = self.inner(imgs, labels)
+            ce, acc1, acc5, _ = self.inner(imgs, labels)
 
         if acc1 is not None:
             pref = "1-Train-Metrics" if self.training else "2-Val-Metrics"
