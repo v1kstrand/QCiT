@@ -1,5 +1,4 @@
 import time
-from copy import deepcopy
 from inspect import signature
 import matplotlib.pyplot as plt
 import torch
@@ -11,7 +10,7 @@ from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v37 import ContextViTv37
-from modules.context_vit_v38 import ContextViTv38
+from modules.context_vit_v39 import ContextViTv39
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -21,7 +20,7 @@ from .utils import to_min, log_fig
 def get_arc(arc):
     return {"vit" : ViT,
             "citv37" : ContextViTv37,
-            "citv38" : ContextViTv38,
+            "citv39" : ContextViTv39,
             }[arc]
 
 
