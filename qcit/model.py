@@ -69,7 +69,7 @@ class OuterModel(nn.Module):
                 start_time = time.perf_counter()
 
             ce, acc1, acc5 = self.inner(imgs, labels, mixup)
-            if len(ce) == 2:
+            if isinstance(ce, tuple):
                 ce, cache = ce
                 
             if mixup and time_it == 1:
