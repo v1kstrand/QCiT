@@ -39,7 +39,7 @@ class InnerModel(nn.Module):
         if isinstance(out, tuple):
             out, cache = out
             
-        pred = self.clsf_out()
+        pred = self.clsf_out(out)
         if self.training and mixup:
             return self.criterion(pred, labels), None, None
         ce = F.cross_entropy(pred, labels, label_smoothing=self.ls)
