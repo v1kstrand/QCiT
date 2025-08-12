@@ -66,7 +66,6 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
 class ContextAttention(nn.Module):
     def __init__(
         self,
@@ -86,8 +85,9 @@ class ContextAttention(nn.Module):
         self.d   = dim // num_heads
         self.K   = num_prototypes
         self.R   = num_registers
-
-        self.proj_x   = nn.Linear(dim, dim + self.K, bias=qkv_bias)   # [B,N,D+K]
+        
+        self.Q_bank = nn.Parameter(torch.randn(1, 1, num_prototypes, dim))
+        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)   # [B,N,D+K]
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
@@ -109,12 +109,15 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
         
-        xq, w_x = torch.split(self.proj_x(x), (D, K), dim=-1)# [B,N,D], [B,N,K]
-        ctx_patch = F.softmax(w_x[:, R:, :].transpose(1, 2), dim=-1) @ xp # [B,K,D]
-        ctx = torch.cat([xreg, ctx_patch], dim=1) # [B, R+K, D]
+        q_ctx = self.Q_bank.expand(B, -1, -1, -1)  # [B,1,K,D]
+        k_ctx = xp.unsqueeze(1)  # [B,1,N,D]
+        v_ctx = xp.unsqueeze(1)  # [B,1,N,D]
+        ctx_p = F.scaled_dot_product_attention(q_ctx, k_ctx, v_ctx, scale=1.0)  # [B,1,K,D]
+        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
         
-        k, v = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        q = xq.view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
         return self.out_drop(self.proj_out(y)) # [B,N,D]
 
@@ -354,7 +357,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv37(nn.Module):
+class ContextViTv38(nn.Module):
     def __init__(
         self,
         img_size=224,
