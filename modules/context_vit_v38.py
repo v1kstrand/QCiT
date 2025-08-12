@@ -131,8 +131,8 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
         
-        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,1,K,D]
-        ctx_p = (q_ctx @ xp.T) @ xp
+        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,K,D]
+        ctx_p = (q_ctx @ xp.transpose(1, 2)) @ xp # [B,K,D]
         ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
         
         ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
