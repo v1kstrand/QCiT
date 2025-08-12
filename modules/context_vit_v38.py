@@ -110,7 +110,7 @@ class ContextAttention(nn.Module):
         assert R + P == N
         
         q_ctx = self.Q_bank.expand(B, -1, -1, -1)  # [B,1,K,D]
-        k_ctx, v_ctx = xp, xp.unsqueeze(1)  # [B,1,N,D]
+        k_ctx, v_ctx = xp.unsqueeze(1), xp.unsqueeze(1)  # [B,1,N,D]
         ctx_p = F.scaled_dot_product_attention(q_ctx, k_ctx, v_ctx, scale=1.0)  # [B,1,K,D]
         ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
         
