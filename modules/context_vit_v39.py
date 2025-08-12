@@ -143,7 +143,9 @@ class ContextAttention(nn.Module):
         cls_n = F.normalize(cls, dim=-1)                          # dtype = activations (bf16/fp16/fp32)
         cent  = self.centroids.to(cls_n.dtype)                    # cast view for matmul
         sims  = cls_n @ cent.t()                                  # stays in activation dtype
-        sims  = sims + self.noise_scale.to(sims.dtype) * torch.randn_like(sims)
+        if self.training:  
+            sims = sims + self.noise_scale.to(sims.dtype) * torch.randn_like(sims)
+        idx = sims.argmax(dim=-1)
         idx   = sims.argmax(dim=-1)
         return cls_n.detach().to(torch.float32), idx              # fp32 for EMA
 
