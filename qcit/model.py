@@ -34,12 +34,17 @@ class InnerModel(nn.Module):
         self.ls = args.kw["label_smoothing"]
 
     def forward(self, x, labels, mixup=False):
-        pred = self.clsf_out(self.model(x))
+        cache = None
+        out = self.model(x)
+        if isinstance(out, tuple):
+            out, cache = out
+            
+        pred = self.clsf_out()
         if self.training and mixup:
             return self.criterion(pred, labels), None, None
         ce = F.cross_entropy(pred, labels, label_smoothing=self.ls)
         acc1, acc5 = accuracy(pred, labels, topk=(1, 5))
-        return ce, acc1, acc5
+        return ce, acc1, acc5, cache
 
 class OuterModel(nn.Module):
     def __init__(self, args, name, kw):
@@ -68,9 +73,7 @@ class OuterModel(nn.Module):
                 torch.cuda.synchronize()
                 start_time = time.perf_counter()
 
-            ce, acc1, acc5 = self.inner(imgs, labels, mixup)
-            if isinstance(ce, tuple):
-                ce, cache = ce
+            ce, acc1, acc5, cache = self.inner(imgs, labels, mixup)
                 
             if mixup and time_it == 1:
                 torch.cuda.synchronize()
