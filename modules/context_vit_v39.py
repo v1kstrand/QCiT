@@ -118,7 +118,7 @@ class ContextAttention(nn.Module):
             trunc_normal_(self.Q_banks, std=0.02)
             
     @torch.no_grad()
-    def _noise_schedule(self):
+    def noise_schedule(self):
         S = max(1, int(self.noise_steps))                   # avoid div-by-zero
         s = min(int(self.noise_step), S)                    # clamp
         t = s / S                                           # 0..1 progress
@@ -128,7 +128,7 @@ class ContextAttention(nn.Module):
         
         
     @torch.no_grad()
-    def _ema_update(self, cls_n, idx):
+    def ema_update(self, cls_n, idx):
         self.sum_buf.zero_().index_add_(0, idx, cls_n)      # [M, D]
         ones = torch.ones_like(idx, dtype=self.sum_buf.dtype)
         self.cnt_buf.zero_().index_add_(0, idx, ones)       # [M]
@@ -139,7 +139,7 @@ class ContextAttention(nn.Module):
             self.centroids[used].copy_(upd)
             
     @torch.no_grad()
-    def _route(self, cls):
+    def route(self, cls):
         cls_n = F.normalize(cls, dim=-1)                          # dtype = activations (bf16/fp16/fp32)
         cent  = self.centroids.to(cls_n.dtype)                    # cast view for matmul
         sims  = cls_n @ cent.t()                                  # stays in activation dtype
@@ -162,7 +162,7 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
 
-        cls_n, idx   = self._route(x[:, 0, :])              # [B]
+        cls_n, idx   = self.route(x[:, 0, :])              # [B]
         q_ctx = self.Q_banks.index_select(0, idx)               # [B, K, D]
         ctx_p = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp        # [B, K, D]
         ctx   = torch.cat([xreg, ctx_p], dim=1)                 # [B, R+K, D]
@@ -536,8 +536,8 @@ class ContextViTv39(nn.Module):
     def update(self, cache):
         for i, blk in enumerate(self.blocks):
             cls_n, idx = cache[i]
-            blk.attn._ema_update(cls_n, idx)
-            blk.attn._noise_schedule()
+            blk.attn.ema_update(cls_n, idx)
+            blk.attn.noise_schedule()
             
 
     def token_drop(self, x):
