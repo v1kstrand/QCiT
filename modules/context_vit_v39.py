@@ -8,6 +8,7 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+import math
 
 
 import torch
@@ -33,6 +34,7 @@ class LayerScale(nn.Module):
         super().__init__()
         self.inplace = inplace
         self.gamma = nn.Parameter(init_values * torch.ones(dim))
+        self.gamma.no_wd = True
 
     def forward(self, x: Tensor) -> Tensor:
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
@@ -64,56 +66,104 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_prototypes: int = 128,
+        num_registers: int,           # including CLS
+        num_prototypes: int = 128,    # K
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        num_banks: int = 4,           # M (banks)
+        ema_momentum: float = 0.95,   # EMA for centroids
+        route_noise: float = 0.0,     # exploration noise on sims (train only)
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
-        self.n_h = num_heads
-        self.h_d = dim // num_heads
-        self.n_proto = num_prototypes
-        
-        self.proj_x = nn.Linear(dim, dim + num_prototypes, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
+        self.D, self.H, self.d = dim, num_heads, dim // num_heads
+        self.K, self.R, self.M = num_prototypes, num_registers, num_banks
+
+        # --- Q banks: [M, K, D] (one bank selected per sample) ---
+        self.Q_banks = nn.Parameter(torch.randn(self.M, self.K, self.D) * 0.02)
+
+        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
+        self.proj_out = nn.Linear(dim, dim,      bias=proj_bias)
 
         self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-        
+        self.out_drop  = nn.Dropout(proj_drop)
+
+        # ---- EMA centroid router (no-grad) ----
+        self.ema_m = ema_momentum
+        self.route_noise = route_noise
+        # orthogonal-ish, unit-norm init for centroids: [M, D]
+        with torch.no_grad():
+            A = torch.randn(self.D, self.M, dtype=torch.float32)
+            Q, _ = torch.linalg.qr(A, mode="reduced")      # [D, M]
+            C = Q.t().contiguous()                         # [M, D]
+            self.register_buffer("centroids", F.normalize(C, dim=-1))     # fp32
+            self.register_buffer("sum_buf",  torch.zeros(self.M, self.D)) # fp32
+            self.register_buffer("cnt_buf",  torch.zeros(self.M))         # fp32
+
     def sdpa(self, q, k, v):
-        dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
+        p = self.attn_drop if self.training else 0.0
+        return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
+
+    @torch.no_grad()
+    def _route_and_update(self, cls):
+        """Hard nearest-centroid routing (cosine), EMA centroid update."""
+        # cls: [B, D]
+        cls_n = F.normalize(cls, dim=-1)                               # [B, D]
+        cent  = F.normalize(self.centroids, dim=-1)                    # [M, D]
+        sims  = cls_n @ cent.t()                                       # [B, M]
+        if self.training and self.route_noise > 0.0:
+            sims = sims + self.route_noise * torch.randn_like(sims)
+        idx   = sims.argmax(dim=-1)                                    # [B]
+
+        # EMA update (aggregate per bank in this batch)
+        if self.training:
+            self.sum_buf.zero_().index_add_(0, idx, cls_n)             # [M, D]
+            ones = torch.ones_like(idx, dtype=self.sum_buf.dtype)
+            self.cnt_buf.zero_().index_add_(0, idx, ones)              # [M]
+            used = self.cnt_buf > 0
+            if used.any():
+                mean = self.sum_buf[used] / self.cnt_buf[used].unsqueeze(1)
+                upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
+                self.centroids[used] = upd
+        return idx  # [B]
 
     def forward(self, x):
-        B, N, D = x.shape 
-        K, H, d = self.n_proto, self.n_h, self.h_d
-        
-        x_q, w_x = torch.split(self.proj_x(x), (D, K), -1) # 2[B, N, D/K]
-        ctx = F.softmax(w_x.transpose(1, 2), -1) @ x # [B, K, D]
-        ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
-        return self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
+        """
+        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
+        """
+        B, N, D = x.shape
+        K, H, d, R = self.K, self.H, self.d, self.R
+        xreg = x[:, :R, :]          # [B, R, D]
+        xp   = x[:, R:, :]          # [B, P, D]
+        P = xp.size(1)
+        assert R + P == N
 
+        # --- hard bank selection via EMA centroids (no gradients) ---
+        idx   = self._route_and_update(x[:, 0, :])              # [B]
+        q_ctx = self.Q_banks.index_select(0, idx)               # [B, K, D]
+
+        # --- your original pooling (no softmax): (q @ xp^T) @ xp  -> [B, K, D] ---
+        # shapes: q_ctx [B,K,D], xp^T [B,D,P] => [B,K,P] ; then @ xp [B,P,D] => [B,K,D]
+        ctx_p = (q_ctx @ xp.transpose(1, 2)) @ xp               # [B, K, D]
+        ctx   = torch.cat([xreg, ctx_p], dim=1)                 # [B, R+K, D]
+
+        # --- standard cross-attention to ctx ---
+        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v   = ctx_kv[0].contiguous(), ctx_kv[1].contiguous() # [B, H, R+K, d]
+        q      = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous()  # [B,H,N,d]
+
+        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
+        return self.out_drop(self.proj_out(y))                   # [B, N, D]
 # # Block
-def drop_path_(x, drop_prob: float = 0.0, training: bool = False):
-    if drop_prob == 0.0 or not training:
-        return x
-    keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-    random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
-    if keep_prob > 0.0:
-        random_tensor.div_(keep_prob)
-    output = x * random_tensor
-    return output
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
     if drop_prob == 0.0 or not training:
@@ -140,6 +190,8 @@ class Block(nn.Module):
         self,
         dim: int,
         num_heads: int,
+        num_registers: int,
+        num_prototypes=64,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         proj_bias: bool = True,
@@ -150,7 +202,6 @@ class Block(nn.Module):
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
-        num_prototypes=64,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -162,6 +213,7 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             num_prototypes=num_prototypes,
+            num_registers=num_registers
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -347,7 +399,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv21(nn.Module):
+class ContextViTv38(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -431,7 +483,8 @@ class ContextViTv21(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                num_prototypes=num_prototypes,
+                num_prototypes=num_prototypes-(n_registers+1),
+                num_registers=n_registers+1
             )
             for i in range(depth)
         ]

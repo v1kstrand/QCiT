@@ -10,7 +10,7 @@ import numpy as np
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
-from modules.context_vit_v21 import ContextViTv21
+from other.context_vit_v21 import ContextViTv21
 from modules.context_vit_v37 import ContextViTv37
 from modules.context_vit_v38 import ContextViTv38
 

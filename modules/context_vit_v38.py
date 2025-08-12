@@ -97,6 +97,27 @@ class ContextAttention(nn.Module):
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
+    
+    def forward(self, x):
+        """
+        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
+        """
+        B, N, D = x.shape
+        K, H, d, R = self.K, self.H, self.d, self.R
+        xreg = x[:, :R, :]              # [B,R,D]
+        xp   = x[:, R:, :]               # [B,P,D]
+        P = xp.size(1)
+        assert R + P == N
+        
+        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,K,D]
+        ctx_p = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp # [B,K,D]
+        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
+        
+        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v = ctx_kv[0], ctx_kv[1]
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
+        return self.out_drop(self.proj_out(y)) # [B,N,D]
 
     def _forward(self, x):
         """
@@ -119,27 +140,7 @@ class ContextAttention(nn.Module):
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
         return self.out_drop(self.proj_out(y)) # [B,N,D]
-    
-    def forward(self, x):
-        """
-        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
-        """
-        B, N, D = x.shape
-        K, H, d, R = self.K, self.H, self.d, self.R
-        xreg = x[:, :R, :]              # [B,R,D]
-        xp   = x[:, R:, :]               # [B,P,D]
-        P = xp.size(1)
-        assert R + P == N
-        
-        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,K,D]
-        ctx_p = (q_ctx @ xp.transpose(1, 2)) @ xp # [B,K,D]
-        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
-        
-        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = ctx_kv[0], ctx_kv[1]
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
-        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
-        return self.out_drop(self.proj_out(y)) # [B,N,D]
+
 
 # # Block
 
