@@ -146,7 +146,6 @@ class ContextAttention(nn.Module):
         if self.training:  
             sims = sims + self.noise_scale.to(sims.dtype) * torch.randn_like(sims)
         idx = sims.argmax(dim=-1)
-        idx   = sims.argmax(dim=-1)
         return cls_n.detach().to(torch.float32), idx              # fp32 for EMA
 
     def sdpa(self, q, k, v):
