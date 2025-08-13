@@ -46,7 +46,7 @@ def load_ema_sd(model):
     model.load_state_dict(aligned, strict=True)
 
 def init_model(model, opt_args, args, print_out=False):
-    print_fn = print if print_out else lambda x: None
+    print_fn = print if print_out else lambda _: None
     base_lr = (opt_args["lr_peak"] * args.batch_size) / opt_args["lr_scale"]
     wd = opt_args["wd_final"]
     layer_decay = opt_args["ld"]
@@ -119,11 +119,7 @@ class OptScheduler:
         if exp is not None:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
-    def __call__(self, step: int = None):
-        """
-        Call at each training step to update LRs.
-        If `step` is provided, uses that instead of internal counter.
-        """
+    def __call__(self, step: int=None):
         step = step if step is not None else self.curr_step
         if step <= self.wu_steps:
             lr_curr = self._set_warm_up(step)
@@ -138,7 +134,6 @@ class OptScheduler:
             self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
 
     def _set_warm_up(self, step: int):
-        """Linearly ramp LR from wu_start → lr_max over wu_steps."""
         curr = 0
         alpha = step / float(self.wu_steps)
         for pg in self.optimizer.param_groups:
@@ -149,7 +144,6 @@ class OptScheduler:
         return curr
 
     def _set_lr_cosine(self, step: int):
-        """Cosine-decay LR from lr_max → lr_end over dec_steps."""
         curr = 0
         dec_step = step - self.wu_steps
         if dec_step >= self.dec_steps:
@@ -166,7 +160,6 @@ class OptScheduler:
         return curr
 
     def _set_wd_cosine(self, step: int):
-        """Cosine-decay LR from lr_max → lr_end over dec_steps."""
         dec_step = step - self.wu_steps
         if dec_step >= self.dec_steps:
             for pg in self.optimizer.param_groups:
@@ -177,9 +170,8 @@ class OptScheduler:
         cos_factor = 0.5 * (1 + math.cos(math.pi * dec_step / float(self.dec_steps)))
         new_wd = self.wd_end + (self.wd_start - self.wd_end) * cos_factor
         for pg in self.optimizer.param_groups:
-            if pg["weight_decay"] == 0:
-                continue
-            pg["weight_decay"] = new_wd
+            if pg["weight_decay"] != 0:
+                pg["weight_decay"] = new_wd
         return new_wd
 
     def state_dict(self):
@@ -216,14 +208,14 @@ def save_model(model_dict, args, file_name):
         },
         save_path,
     )
-    
+
 def dump_args(args, root = "/notebooks/", file_name=None):
     file_name = file_name or get_time(get_date=True)
     if root != "/notebooks/":
         root.mkdir(parents=True, exist_ok=True)
     with open(Path(root) / f"{file_name}.yaml", "w", encoding="utf-8") as f:
         yaml.dump(args.save_args, f)
-        
+
 def profile_model(model_dict, x, y, args):
     profile_dir = args.exp_dir / "profiling"
     profile_dir.mkdir(parents=True, exist_ok=True)

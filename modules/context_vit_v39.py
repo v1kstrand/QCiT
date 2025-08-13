@@ -163,15 +163,15 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
 
-        cls_n, idx   = self.route(x[:, 0, :])              # [B]
-        q_ctx = self.Q_banks.index_select(0, idx)               # [B, K, D]
-        ctx_p = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp        # [B, K, D]
-        ctx   = torch.cat([xreg, ctx_p], dim=1)                 # [B, R+K, D]
-        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v   = ctx_kv[0], ctx_kv[1] # [B, H, R+K, d]
-        q      = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous()  # [B,H,N,d]
-        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
-        return self.out_drop(self.proj_out(y)), cls_n, idx                   # [B, N, D]
+        cls_n, idx = self.route(x[:, 0, :])                               # [B]
+        q_ctx      = self.Q_banks.index_select(0, idx)                    # [B, K, D]
+        ctx_p      = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp   # [B, K, D]
+        ctx        = torch.cat([xreg, ctx_p], dim=1)                      # [B, R+K, D]
+        ctx_kv     = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v       = ctx_kv[0], ctx_kv[1]                                 # [B, H, R+K, d]
+        q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), cls_n, idx          # [B, N, D]
     
 # # Block
 

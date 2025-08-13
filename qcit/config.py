@@ -53,7 +53,7 @@ def set_torch_config():
     dynamo_config = torch._dynamo.config
     dynamo_config.compiled_autograd = True
     dynamo_config.capture_scalar_outputs = False
-    dynamo_config.cache_size_limit = 128
+    dynamo_config.cache_size_limit = 512
 
     inductor_config =  torch._inductor.config
     # spend longer tuning for best Triton kernels
@@ -109,6 +109,60 @@ def set_torch_config():
     inductor_config.cuda.cutlass_backend_min_gemm_size = 32 * 32 * 32  # small GEMMs → Triton
     inductor_config.cuda.cutlass_op_denylist_regex = "pingpong"  # filter unstable kernels
     print("INFO: Torch Config Set ✔✔")
+    
+def set_torch_config_v2(safe_config: bool = True):
+
+    # ----- Math mode / cuDNN -----
+    torch.set_float32_matmul_precision("high" if safe_config else "medium")
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    # SDPA global toggles (you can still choose per-call with sdp_kernel)
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    torch.backends.cuda.enable_math_sdp(False)
+
+    # ----- Dynamo / AOTAutograd -----
+    dynamo = torch._dynamo.config
+    dynamo.compiled_autograd = True
+    dynamo.capture_scalar_outputs = False
+    dynamo.cache_size_limit = 512  # more room if many graphs
+
+    # ----- Inductor -----
+    ind = torch._inductor.config
+    ind.max_autotune = True
+    ind.epilogue_fusion = True
+    ind.shape_padding = True
+    ind.b2b_gemm_pass = True
+
+    # Numeric / codegen safety vs speed
+    ind.cpp.enable_floating_point_contract_flag = "fast"
+    ind.cpp.enable_unsafe_math_opt_flag = (not safe_config)
+    ind.cuda.use_fast_math = (not safe_config)
+
+    # Triton tiling / reductions (mostly fine either way)
+    ind.triton.max_tiles = 3
+    ind.triton.prefer_nd_tiling = True
+    ind.triton.tiling_prevents_pointwise_fusion = False
+    ind.triton.tiling_prevents_reduction_fusion = False
+    ind.triton.persistent_reductions = True
+    ind.triton.cooperative_reductions = True
+    ind.triton.multi_kernel = 1
+    ind.triton.divisible_by_16 = True
+    ind.triton.spill_threshold = 16 if safe_config else 32
+    ind.triton.codegen_upcast_to_fp32 = True # TODO -> safe_config
+
+    # Host compile / CUDA codegen
+    ind.cuda.compile_opt_level = "-O3"
+    ind.cuda.enable_cuda_lto = True
+
+    # CUTLASS autotune
+    # Unsafe: tune *all* kernels (long compiles). Safe: cap to keep compiles reasonable.
+    ind.cuda.cutlass_max_profiling_configs = None
+    ind.cuda.cutlass_backend_min_gemm_size = 32 * 32 * 32
+    ind.cuda.cutlass_op_denylist_regex = None
+    print(f"INFO: Torch Config Set ✔✔  Profile={'SAFE' if safe_config else 'UNSAFE/MAX'}")
 
 def get_args():
     parser = argparse.ArgumentParser()

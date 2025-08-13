@@ -1,11 +1,8 @@
 import time
 from inspect import signature
-import matplotlib.pyplot as plt
 import torch
 from torch import nn
 import torch.nn.functional as F
-import numpy as np
-
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
@@ -15,6 +12,7 @@ from modules.context_vit_v39 import ContextViTv39
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min, log_fig
+from .plot import plot_fn
 
 
 def get_arc(arc):
@@ -54,12 +52,13 @@ class OuterModel(nn.Module):
         self.kw = kw
         self.inner = InnerModel(args, self)
         self.ema_sd = self.last_top1 = self.backward = None
+        self.plot_freq = kw.get("plot_freq", float("inf"))
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
 
-    def forward(self, imgs, labels, cum_stats, mixup=False, time_it=None, profiling=False):
-        stats = {}
+    def forward(self, imgs, labels, cum_stats, mixup=False, step=0, profiling=False):
+        stats, time_it = {}, step % self.args.freq["time_it"]
 
         if profiling:
             self.backward.zero()
@@ -68,7 +67,7 @@ class OuterModel(nn.Module):
             return
         if self.training:
             self.backward.zero()
-
+            
             if mixup and time_it in (0, 1):
                 torch.cuda.synchronize()
                 start_time = time.perf_counter()
@@ -90,6 +89,10 @@ class OuterModel(nn.Module):
                     stats[f"Time/{self.name} - Backward Pass"] = to_min(back_time)
                 else:
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
+                    
+            if step % self.plot_freq == 0:
+                fig = plot_fn(cache)
+                log_fig(fig, f"{self.name}_step:{step}", self.args.exp)
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
@@ -148,94 +151,3 @@ def get_encoder(module, args, model):
             return_cls_only=kw.get("return_cls_only", True),
             **kw.get("unique", {})
         )
-
-# PLOT Util
-
-def plot(m, name, *, max_blocks=12, batch_idx=0, clear=True):
-    for k in ("log_a", "log_b", "log_z", "log_zf"):
-        fig = plot_fn(m, k, title=f"{name} — {k}", max_blocks=max_blocks, batch_idx=batch_idx)
-        if fig is not None:
-            log_fig(fig, f"{name}_{k}", m.args.exp)
-
-        if clear:
-            for blk in m.inner.model.blocks:
-                attn = getattr(blk, "attn", None)
-                if attn is not None and hasattr(attn, k):
-                    setattr(attn, k, None)
-
-           
-def plot_fn(m, k, title=None, max_blocks=12, batch_idx=0, vclip=(1, 99)):
-    """
-    Plot raw logits stored on each block's attn.<k> and return a single Figure.
-
-    Args:
-      m: model holder with m.inner.model.blocks[*].attn
-      k: "log_z", "log_zf", "log_a", or "log_b"
-      title: optional figure title
-      max_blocks: cap number of blocks to display
-      batch_idx: which batch element to visualize if tensor is batched
-      vclip: percentile clip (low, high) for heatmaps; None to disable
-    """
-    mats, block_ids = [], []
-
-    # collect per-block logged tensors (no softmax)
-    for i, blk in enumerate(m.inner.model.blocks):
-        attn = getattr(blk, "attn", None)
-        if attn is None or not hasattr(attn, k):
-            continue
-        w = getattr(attn, k)
-        if w is None:
-            continue
-
-        if isinstance(w, torch.Tensor):
-            w = w.detach().to("cpu").float()
-        else:
-            w = torch.as_tensor(w, dtype=torch.float32)
-
-        if w.ndim == 3:       # [B, K, P] logits
-            X = w[batch_idx]  # [K, P]
-        elif w.ndim == 2:     # [B, K] or [B, P]
-            X = w[batch_idx]  # [K] or [P]
-        elif w.ndim == 1:     # [K] or [P]
-            X = w
-        else:
-            continue
-
-        mats.append(X.numpy())
-        block_ids.append(i)
-        if len(mats) >= max_blocks:
-            break
-
-    if not mats:
-        return None
-
-    is_vector = (mats[0].ndim == 1)
-    n = len(mats)
-    fig, axes = plt.subplots(n, 1, figsize=(10, (2.0 if not is_vector else 2.2) * n), squeeze=False)
-
-    # robust color scaling for heatmaps
-    vmin = vmax = None
-    if not is_vector and vclip is not None:
-        all_vals = np.concatenate([x.ravel() for x in mats])
-        lo, hi = np.percentile(all_vals, [vclip[0], vclip[1]])
-        vmin, vmax = float(lo), float(hi)
-
-    for ax, X, i in zip(axes[:, 0], mats, block_ids):
-        if X.ndim == 1:
-            ax.bar(np.arange(X.shape[0]), X)
-            ax.set_xlim(-0.5, X.shape[0] - 0.5)
-            ax.set_ylabel('logit')
-        else:
-            im = ax.imshow(X, aspect='auto', interpolation='nearest',
-                           origin='upper', vmin=vmin, vmax=vmax)
-            cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-            cb.ax.set_ylabel('logit', rotation=270, labelpad=10)
-            ax.set_ylabel('K')
-
-        ax.set_title(f'Block {i} — {k}')
-        ax.set_xlabel('pos' if X.ndim == 1 else 'P')
-
-    fig.suptitle(title or f'{k} (raw logits) per block', fontsize=14)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    return fig
-
