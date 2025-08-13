@@ -91,7 +91,7 @@ def load_model(args):
     scalers = {}
 
     for name, kw in args.models.items():
-        models[name] = m = OuterModel(args, name, kw).cuda()
+        models[name] = m = OuterModel(args, name).cuda()
         m.ema_sd = set_ema_sd(m)
 
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]

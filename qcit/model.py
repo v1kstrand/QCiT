@@ -12,7 +12,7 @@ from modules.context_vit_v39 import ContextViTv39
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min, log_fig
-from .plot import plot_fn
+from .plot import plot_fn_idx, plot_fn_sim
 
 
 def get_arc(arc):
@@ -23,10 +23,9 @@ def get_arc(arc):
 
 
 class InnerModel(nn.Module):
-    def __init__(self, args, outer):
+    def __init__(self, args, name):
         super().__init__()
-        arc = get_arc(outer.kw["arc"]) 
-        self.model = get_encoder(arc, args, outer)
+        self.model = get_encoder(args, name)
         self.clsf_out = nn.Linear(args.vkw["d"], NUM_CLASSES)
         self.criterion = SoftTargetCrossEntropy()
         self.ls = args.kw["label_smoothing"]
@@ -45,14 +44,13 @@ class InnerModel(nn.Module):
         return ce, acc1, acc5, cache
 
 class OuterModel(nn.Module):
-    def __init__(self, args, name, kw):
+    def __init__(self, args, name):
         super().__init__()
         self.args = args
         self.name = name
-        self.kw = kw
-        self.inner = InnerModel(args, self)
+        self.inner = InnerModel(args, name)
         self.ema_sd = self.last_top1 = self.backward = None
-        self.plot_freq = kw.get("plot_freq", float("inf"))
+        self.plot_freq = args.models[name].get("plot_freq", float("inf"))
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
@@ -62,7 +60,7 @@ class OuterModel(nn.Module):
 
         if profiling:
             self.backward.zero()
-            ce, acc1, acc5 = self.inner(imgs, labels, mixup)
+            ce, acc1, acc5, _ = self.inner(imgs, labels, mixup)
             self.backward(self.inner, ce)
             return
         if self.training:
@@ -91,8 +89,10 @@ class OuterModel(nn.Module):
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
             if step % self.plot_freq == 0:
-                fig = plot_fn(cache)
-                log_fig(fig, f"{self.name}_step:{step}", self.args.exp)
+                fig_sim = plot_fn_sim(cache)
+                fig_idx = plot_fn_idx(cache)
+                log_fig(fig_sim, f"{self.name}_step:{step}_sim", self.args.exp)
+                log_fig(fig_idx, f"{self.name}_step:{step}_idx", self.args.exp)
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
@@ -105,8 +105,6 @@ class OuterModel(nn.Module):
         for k, v in stats.items():
             cum_stats[k].append(v)
         del stats
-        
-        #plot(self, self.name)
  
 
 class PushGrad(nn.Module):
@@ -129,12 +127,13 @@ class PushGrad(nn.Module):
     def zero(self):
         self.optimizer.zero_grad(set_to_none=True)
 
-def get_encoder(module, args, model):
-    init_params, kw = signature(module).parameters, model.kw
+def get_encoder(args, name):
+    module = get_arc(args.models[name]["arc"]) 
+    init_params, kw = signature(module).parameters, args.models[name]
     for k, v in kw.get("unique", {}).items():
-        assert k in init_params, f"{k} not found in {model.name}"
-        print(f"INFO: Assigning ({k} : {v}) to {model.name}")
-    print(f"INFO: {model.name} initiated")
+        assert k in init_params, f"{k} not found in {name}"
+        print(f"INFO: Assigning ({k} : {v}) to {name}")
+    print(f"INFO: {name} initiated")
 
     return module(
             patch_size=args.vkw["patch_size"],
@@ -143,7 +142,7 @@ def get_encoder(module, args, model):
             depth=args.vkw["n_layers"],
             num_heads=args.vkw["n_heads"],
             mlp_ratio=kw.get("mlp_ratio", 4),
-            drop_path_uniform=kw.get("drop_path_uniform", True),
+            drop_path_uniform=kw.get("drop_path_uniform", False),
             drop_path_rate=kw.get("drop_path_rate", 0),
             layerscale=kw.get("layerscale", None),
             token_drop=kw.get("token_drop", 0),

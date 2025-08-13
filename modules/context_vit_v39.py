@@ -8,7 +8,6 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
-import math
 
 
 import torch
@@ -144,8 +143,10 @@ class ContextAttention(nn.Module):
         cent  = self.centroids.to(cls_n.dtype)                    # cast view for matmul
         sims  = cls_n @ cent.t()                                  # stays in activation dtype
         if self.training:  
-            sims = sims + self.noise_scale.to(sims.dtype) * torch.randn_like(sims)
-        idx = sims.argmax(dim=-1)
+            sims_prime = sims + self.noise_scale.to(sims.dtype) * torch.randn_like(sims)
+        else:
+            sims_prime = sims
+        idx = sims_prime.argmax(dim=-1)
         return cls_n.detach().to(torch.float32), idx              # fp32 for EMA
 
     def sdpa(self, q, k, v):
@@ -252,7 +253,7 @@ class Block(nn.Module):
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         # precompute attention branch once
-        y_attn, cls_n, idx = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
+        y_attn, *cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
         attn_out = self.ls1(y_attn)                     # [B,N,D]
 
         # FFN residual func stays as-is
@@ -279,7 +280,7 @@ class Block(nn.Module):
             x = x + attn_out
             x = x + ffn_residual_func(x)
 
-        return x, cls_n, idx
+        return x, cache
 
 def drop_add_residual_stochastic_depth(
     x: Tensor,
@@ -557,11 +558,11 @@ class ContextViTv39(nn.Module):
     def forward(self, x):
         x = self.prepare_tokens(x)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
-            caches = [] 
+            caches = []
             for blk in self.blocks:
-                x, cls_n, idx = blk(x)
+                x, cache = blk(x)
                 if self.training:
-                    caches.append((cls_n.detach().to(torch.float32), idx))
+                    caches.append(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
