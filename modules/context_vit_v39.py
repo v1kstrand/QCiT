@@ -253,7 +253,7 @@ class Block(nn.Module):
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         # precompute attention branch once
-        y_attn, *cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
+        y_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
         attn_out = self.ls1(y_attn)                     # [B,N,D]
 
         # FFN residual func stays as-is
