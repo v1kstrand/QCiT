@@ -64,7 +64,31 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+    
+class Attention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        proj_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = attn_drop
+        self.proj = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_drop = nn.Dropout(proj_drop)
 
+    def forward(self, x: Tensor) -> Tensor:
+        B, N, D = x.shape
+        H, d   = self.num_heads, self.head_dim
+        qkv = self.qkv(x).reshape(B, N, 3, H, d).permute(2, 0, 3, 1, 4)
+        attn_out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # → [B, H, N, D]
+        return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
 
 class EMARouter(nn.Module):
     def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0, min_share=0.05, ema_usage = 0.99):
@@ -73,7 +97,7 @@ class EMARouter(nn.Module):
         self.eps = eps  
         self.min_share = min_share
         self.ema_usage = ema_usage
-        # fp32 buffers
+        
         with torch.no_grad():
             A = torch.randn(D, M, dtype=torch.float32)
             Q, _ = torch.linalg.qr(A, mode="reduced")   # [D,M]
@@ -83,7 +107,6 @@ class EMARouter(nn.Module):
         self.register_buffer("cnt_buf", torch.zeros(M))
         self.register_buffer("usage_ema", torch.zeros(M))   # share per bank
 
-    # deterministic nearest-centroid routing (pure; safe to keep in compiled graph)
     @torch.no_grad()
     def route(self, cls: torch.Tensor):
         """
@@ -240,21 +263,32 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         num_banks: int = 4,           # M (banks)
         ema_momentum: float = 0.995,   # EMA for centroids
+        block_idx=-1
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = ContextAttention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-            num_prototypes=num_prototypes,
-            num_registers=num_registers,
-            num_banks=num_banks,
-            ema_momentum=ema_momentum,
-        )
+        if block_idx == 0:
+            self.attn = Attention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                proj_bias=proj_bias,
+                attn_drop=attn_drop,
+                proj_drop=drop,
+            )
+        else:
+            self.attn = ContextAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                proj_bias=proj_bias,
+                attn_drop=attn_drop,
+                proj_drop=drop,
+                num_prototypes=num_prototypes,
+                num_registers=num_registers,
+                num_banks=num_banks,
+                ema_momentum=ema_momentum,
+            )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
         )
@@ -536,6 +570,7 @@ class ContextViTv40(nn.Module):
                 num_registers=n_registers+1,
                 num_banks=num_banks,
                 ema_momentum=ema_momentum,
+                block_idx=i
             )
             for i in range(depth)
         ]
@@ -559,8 +594,9 @@ class ContextViTv40(nn.Module):
             x = self.token_drop(x)
         return x
     
-    def update(self, cache, step):
-        for i, blk in enumerate(self.blocks):
+    def update(self, cache, _):
+        for i in range(1, len(self.blocks)):
+            blk = self.blocks[i]
             cls_n, idx, _ = cache[i]
             blk.attn.router.ema_update(cls_n, idx)
             #if i and step and step % self.reseed_freq == 0:

@@ -12,7 +12,10 @@ def plot_fn_idx(caches, M: int = None, block_labels=None, normalize: bool = Fals
       `sort` in {"id","count"} controls x-order in compact mode.
     """
     idx_list, max_m = [], 0
-    for _, idx, _ in caches:
+    for c in caches:
+        if c is None:
+            continue
+        _, idx, _ = c
         idx_np = idx.detach().to("cpu").view(-1).numpy() if isinstance(idx, torch.Tensor) else np.asarray(idx).reshape(-1)
         idx_list.append(idx_np)
         if idx_np.size: max_m = max(max_m, int(idx_np.max()) + 1)
@@ -93,7 +96,10 @@ def plot_fn_sim(
     sims_list, picked = [], []
 
     # collect sampled matrices per block
-    for _, _, sim in caches:
+    for c in caches:
+        if c is None:
+            continue
+        _, _, sim = c
         sims = sim.detach().float().to("cpu").numpy() if isinstance(sim, torch.Tensor) else np.asarray(sim)
         B, M = sims.shape
         k_b = min(k, B)
