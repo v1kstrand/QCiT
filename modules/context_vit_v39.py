@@ -538,7 +538,7 @@ class ContextViTv39(nn.Module):
     
     def update(self, cache):
         for i, blk in enumerate(self.blocks):
-            cls_n, idx = cache[i]
+            cls_n, idx, _ = cache[i]
             blk.attn.ema_update(cls_n, idx)
             blk.attn.noise_schedule()
             
