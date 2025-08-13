@@ -124,6 +124,7 @@ class ContextAttention(nn.Module):
         val = self.noise_min + (self.noise_max - self.noise_min) * (1.0 - t)
         self.noise_scale.copy_(self.noise_scale.new_tensor(val))
         self.noise_step.add_(1)
+        print(f"DEBUG: noise_step: {self.noise_step}")
         
         
     @torch.no_grad()
@@ -136,6 +137,7 @@ class ContextAttention(nn.Module):
             mean = self.sum_buf[used] / self.cnt_buf[used].unsqueeze(1)
             upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
             self.centroids[used].copy_(upd)
+            print(f"DEBUG: Centroids updated")
             
     @torch.no_grad()
     def route(self, cls):
