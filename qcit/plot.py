@@ -12,7 +12,7 @@ def plot_fn_idx(caches, M: int = None, block_labels=None, normalize: bool = Fals
       `sort` in {"id","count"} controls x-order in compact mode.
     """
     idx_list, max_m = [], 0
-    for _, idx in caches:
+    for _, idx, _ in caches:
         idx_np = idx.detach().to("cpu").view(-1).numpy() if isinstance(idx, torch.Tensor) else np.asarray(idx).reshape(-1)
         idx_list.append(idx_np)
         if idx_np.size: max_m = max(max_m, int(idx_np.max()) + 1)
