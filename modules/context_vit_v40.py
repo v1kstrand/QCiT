@@ -8,7 +8,6 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
-import math
 
 
 import torch
@@ -66,82 +65,139 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
+
+class EMARouter(nn.Module):
+    def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0, min_share=0.05, ema_usage = 0.99):
+        super().__init__()
+        self.D, self.M, self.ema_m = D, M, ema_m
+        self.eps = eps  
+        self.min_share = min_share
+        self.ema_usage = ema_usage
+        # fp32 buffers
+        with torch.no_grad():
+            A = torch.randn(D, M, dtype=torch.float32)
+            Q, _ = torch.linalg.qr(A, mode="reduced")   # [D,M]
+            C = F.normalize(Q.t().contiguous(), dim=-1) # [M,D]
+        self.register_buffer("centroids", C)
+        self.register_buffer("sum_buf", torch.zeros(M, D))
+        self.register_buffer("cnt_buf", torch.zeros(M))
+        self.register_buffer("usage_ema", torch.zeros(M))   # share per bank
+
+    # deterministic nearest-centroid routing (pure; safe to keep in compiled graph)
+    def route(self, cls: torch.Tensor):
+        """
+        cls: [B, D]
+        returns:
+          cls_n: [B, D] (unit-norm)
+          idx:   [B]    (argmax over M)
+          sims: [B, M]
+        """
+        cls_n = F.normalize(cls, dim=-1)
+        cent  = self.centroids.to(cls_n.dtype)
+        sims = cls_n @ cent.t()
+        idx   = sims.argmax(dim=-1)
+        return cls_n.detach().to(torch.float32), idx, sims 
+
+    @torch.no_grad()
+    def ema_update(self, cls_n: torch.Tensor, idx: torch.Tensor):
+        """
+        Pure VQ-style EMA with Laplace smoothing on counts (ε=1.0).
+        cls_n: [B, D] unit-norm CLS used for routing
+        idx:   [B]    chosen bank ids
+        """
+        self.sum_buf.zero_().index_add_(0, idx, cls_n)         # [M, D]
+        ones = torch.ones_like(idx, dtype=self.sum_buf.dtype)
+        self.cnt_buf.zero_().index_add_(0, idx, ones)          # [M]
+        used = self.cnt_buf > 0
+        if used.any():
+            mean = self.sum_buf[used] / (self.cnt_buf[used].unsqueeze(1) + self.eps)
+            upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
+            self.centroids[used].copy_(upd)
+
+        total = self.cnt_buf.sum().clamp_min(1)
+        share = (self.cnt_buf / total).to(self.usage_ema.dtype)
+        self.usage_ema.mul_(self.ema_usage).add_((1 - self.ema_usage) * share)  
+
+
+    @torch.no_grad()
+    def reseed(self, cls_source: torch.Tensor):
+        weak = self.usage_ema < self.min_share
+        if not weak.any() or cls_source.numel() == 0:
+            return
+
+        # farthest-point reseed (cosine space)
+        cent = F.normalize(self.centroids, dim=-1)               # [M,D]
+        sims = cls_source @ cent.t()                             # [B,M]
+        cover = sims.max(dim=1).values                           # nearest-centroid sim per sample
+        order = torch.argsort(cover, descending=False)           # farthest first
+
+        weak_idx = torch.where(weak)[0]
+        k = min(weak_idx.numel(), order.numel())
+        if k == 0:
+            return
+        print(f"DEBUG: Reseed {k} centroids")
+        picks = order[:k]
+        self.centroids[weak_idx[:k]].copy_(cls_source[picks])
+
+
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_registers: int, # including cls
-        num_prototypes: int = 128,   # K
+        num_registers: int,           # including CLS
+        num_prototypes: int = 128,    # K
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
+        num_banks: int = 4,           # M (banks)
+        ema_momentum: float = 0.995,   # EMA for centroids
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.D   = dim
-        self.H   = num_heads
-        self.d   = dim // num_heads
-        self.K   = num_prototypes
-        self.R   = num_registers
-        
-        self.Q_bank = nn.Parameter(torch.randn(1, num_prototypes, dim))
-        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)   # [B,N,D+K]
+        self.D, self.H, self.d = dim, num_heads, dim // num_heads
+        self.K, self.R, self.M = num_prototypes, num_registers, num_banks
+
+        self.Q_banks = nn.Parameter(torch.randn(self.M, self.K, self.D))
+        self.router = EMARouter(dim, num_banks, ema_momentum)
+
+        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_out = nn.Linear(dim, dim,      bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
         
+        with torch.no_grad():
+            trunc_normal_(self.Q_banks, std=0.02)
+            
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
-    
+
+            
     def forward(self, x):
         """
         x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
         """
         B, N, D = x.shape
         K, H, d, R = self.K, self.H, self.d, self.R
-        xreg = x[:, :R, :]              # [B,R,D]
-        xp   = x[:, R:, :]               # [B,P,D]
+        xreg = x[:, :R, :]          # [B, R, D]
+        xp   = x[:, R:, :]          # [B, P, D]
         P = xp.size(1)
         assert R + P == N
-        
-        q_ctx = self.Q_bank.expand(B, -1, -1)  # [B,K,D]
-        ctx_p = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp # [B,K,D]
-        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
-        
-        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = ctx_kv[0], ctx_kv[1]
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
-        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
-        return self.out_drop(self.proj_out(y)) # [B,N,D]
 
-    def _forward(self, x):
-        """
-        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
-        """
-        B, N, D = x.shape
-        K, H, d, R = self.K, self.H, self.d, self.R
-        xreg = x[:, :R, :]              # [B,R,D]
-        xp   = x[:, R:, :]               # [B,P,D]
-        P = xp.size(1)
-        assert R + P == N
-        
-        q_ctx = self.Q_bank.expand(B, -1, -1, -1)  # [B,1,K,D]
-        k_ctx, v_ctx = xp.unsqueeze(1), xp.unsqueeze(1)  # [B,1,N,D]
-        ctx_p = F.scaled_dot_product_attention(q_ctx, k_ctx, v_ctx, scale=1.0)  # [B,1,K,D]
-        ctx = torch.cat([xreg, ctx_p.squeeze(1)], dim=1) # [B, R+K, D]
-        
-        ctx_kv = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = ctx_kv[0], ctx_kv[1]
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
-        y = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B,N,D]
-        return self.out_drop(self.proj_out(y)) # [B,N,D]
-
-
+        cls_n, idx, sims = self.router.route(x[:, 0, :])                               # [B]
+        q_ctx      = self.Q_banks.index_select(0, idx)                    # [B, K, D]
+        ctx_p      = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp   # [B, K, D]
+        ctx        = torch.cat([xreg, ctx_p], dim=1)                      # [B, R+K, D]
+        ctx_kv     = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v       = ctx_kv[0], ctx_kv[1]                                 # [B, H, R+K, d]
+        q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (cls_n, idx, sims)          # [B, N, D]
+    
 # # Block
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
@@ -181,6 +237,8 @@ class Block(nn.Module):
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
+        num_banks: int = 4,           # M (banks)
+        ema_momentum: float = 0.995,   # EMA for centroids
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -192,7 +250,9 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             num_prototypes=num_prototypes,
-            num_registers=num_registers
+            num_registers=num_registers,
+            num_banks=num_banks,
+            ema_momentum=ema_momentum,
         )
         self.ls1 = (
             LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
@@ -213,18 +273,21 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.sample_drop_ratio = drop_path
 
-    def forward(self, x: Tensor) -> Tensor:
-        def attn_residual_func(x: Tensor) -> Tensor:
-            return self.ls1(self.attn(self.norm1(x)))
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        # precompute attention branch once
+        y_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
+        attn_out = self.ls1(y_attn)                     # [B,N,D]
 
-        def ffn_residual_func(x: Tensor) -> Tensor:
-            return self.ls2(self.mlp(self.norm2(x)))
+        # FFN residual func stays as-is
+        def ffn_residual_func(u: Tensor) -> Tensor:
+            return self.ls2(self.mlp(self.norm2(u)))
 
         if self.training and self.sample_drop_ratio > 0.1:
-            # the overhead is compensated only for a drop path rate larger than 0.1
+            # pass a const-returning func (ignores its input)
+            assert False, "not implemented yet (ignore this for now bc i use 0.1 as default)"
             x = drop_add_residual_stochastic_depth(
                 x,
-                residual_func=attn_residual_func,
+                residual_func=lambda _: attn_out,
                 sample_drop_ratio=self.sample_drop_ratio,
             )
             x = drop_add_residual_stochastic_depth(
@@ -233,12 +296,13 @@ class Block(nn.Module):
                 sample_drop_ratio=self.sample_drop_ratio,
             )
         elif self.training and self.sample_drop_ratio > 0.0:
-            x = x + self.drop_path1(attn_residual_func(x))
+            x = x + self.drop_path1(attn_out)
             x = x + self.drop_path2(ffn_residual_func(x))
         else:
-            x = x + attn_residual_func(x)
+            x = x + attn_out
             x = x + ffn_residual_func(x)
-        return x
+
+        return x, cache
 
 def drop_add_residual_stochastic_depth(
     x: Tensor,
@@ -378,7 +442,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv38(nn.Module):
+class ContextViTv40(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -401,6 +465,9 @@ class ContextViTv38(nn.Module):
         num_prototypes=16,
         return_cls_only=True,
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
+        num_banks: int = 4,           # M (banks)
+        ema_momentum: float = 0.95,   # EMA for centroids
+        reseed_freq = 1000,
     ):
         """
         Args:
@@ -431,6 +498,7 @@ class ContextViTv38(nn.Module):
         self.num_prototypes = num_prototypes
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
+        self.reseed_freq = reseed_freq
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -439,7 +507,7 @@ class ContextViTv38(nn.Module):
             embed_dim=embed_dim,
         )
         self.n_patches = self.patch_embed.n_patches
-        self.tok_cls = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
+        self.tok_regs = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
         num_tokens = 1 + self.n_registers + self.n_patches
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
@@ -449,6 +517,7 @@ class ContextViTv38(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+            dpr[-1] = drop_path_rate
 
         blocks_list = [
             Block(
@@ -463,7 +532,9 @@ class ContextViTv38(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 num_prototypes=num_prototypes-(n_registers+1),
-                num_registers=n_registers+1
+                num_registers=n_registers+1,
+                num_banks=num_banks,
+                ema_momentum=ema_momentum,
             )
             for i in range(depth)
         ]
@@ -474,19 +545,26 @@ class ContextViTv38(nn.Module):
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
-        nn.init.normal_(self.tok_cls, std=1e-6)
+        nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
-            cls_token = self.tok_cls.expand(x.size(0), -1, -1)
-            x = torch.cat((cls_token, x), dim=1) + self.tok_pos_emb
+            reg_tokens = self.tok_regs.expand(x.size(0), -1, -1)
+            x = torch.cat((reg_tokens, x), dim=1) + self.tok_pos_emb
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
-
+    
+    def update(self, cache, step):
+        for i, blk in enumerate(self.blocks):
+            cls_n, idx, _ = cache[i]
+            blk.attn.router.ema_update(cls_n, idx)
+            if i and step and step % self.reseed_freq == 0:
+                blk.attn.router.reseed(cls_n)
+                
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
@@ -502,11 +580,16 @@ class ContextViTv38(nn.Module):
     def forward(self, x):
         x = self.prepare_tokens(x)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
+            caches = []
             for blk in self.blocks:
-                x = blk(x)
+                x, cache = blk(x)
+                if self.training:
+                    caches.append(cache)
+        
+        x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return out[:, 0, :] if self.return_cls_only else out
+        return (out, caches) if self.training else out
 
 
 # # END

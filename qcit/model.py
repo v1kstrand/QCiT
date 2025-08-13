@@ -7,7 +7,7 @@ from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v37 import ContextViTv37
-from modules.context_vit_v39 import ContextViTv39
+from modules.context_vit_v40 import ContextViTv40
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -18,7 +18,7 @@ from .plot import plot_fn_idx, plot_fn_sim
 def get_arc(arc):
     return {"vit" : ViT,
             "citv37" : ContextViTv37,
-            "citv39" : ContextViTv39,
+            "citv40" : ContextViTv40,
             }[arc]
 
 
@@ -79,7 +79,7 @@ class OuterModel(nn.Module):
 
             self.backward(self.inner, ce)
             if hasattr(self.inner.model, "update"):
-                self.inner.model.update(cache)
+                self.inner.model.update(cache, step)
 
             if mixup and time_it in (0, 1):
                 torch.cuda.synchronize()
