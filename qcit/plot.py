@@ -94,7 +94,7 @@ def plot_fn_sim(
 
     # collect sampled matrices per block
     for _, _, sim in caches:
-        sims = sim.detach().to("cpu").numpy() if isinstance(sim, torch.Tensor) else np.asarray(sim)
+        sims = sim.detach().float().to("cpu").numpy() if isinstance(sim, torch.Tensor) else np.asarray(sim)
         B, M = sims.shape
         k_b = min(k, B)
         idx = rng.choice(B, size=k_b, replace=False)
