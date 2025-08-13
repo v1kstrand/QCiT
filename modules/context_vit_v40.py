@@ -84,6 +84,7 @@ class EMARouter(nn.Module):
         self.register_buffer("usage_ema", torch.zeros(M))   # share per bank
 
     # deterministic nearest-centroid routing (pure; safe to keep in compiled graph)
+    @torch.no_grad()
     def route(self, cls: torch.Tensor):
         """
         cls: [B, D]
