@@ -93,7 +93,7 @@ class EMARouter(nn.Module):
           idx:   [B]    (argmax over M)
           sims: [B, M]
         """
-        cls_n = F.normalize(cls, dim=-1)
+        cls_n = F.normalize(cls - cls.mean(dim=0, keepdim=True), dim=-1)
         cent  = self.centroids.to(cls_n.dtype)
         sims = cls_n @ cent.t()
         idx   = sims.argmax(dim=-1)
@@ -115,9 +115,9 @@ class EMARouter(nn.Module):
             upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
             self.centroids[used].copy_(upd)
 
-        total = self.cnt_buf.sum().clamp_min(1)
-        share = (self.cnt_buf / total).to(self.usage_ema.dtype)
-        self.usage_ema.mul_(self.ema_usage).add_((1 - self.ema_usage) * share)  
+        #total = self.cnt_buf.sum().clamp_min(1)
+        #share = (self.cnt_buf / total).to(self.usage_ema.dtype)
+        #self.usage_ema.mul_(self.ema_usage).add_((1 - self.ema_usage) * share)
 
 
     @torch.no_grad()
@@ -563,8 +563,8 @@ class ContextViTv40(nn.Module):
         for i, blk in enumerate(self.blocks):
             cls_n, idx, _ = cache[i]
             blk.attn.router.ema_update(cls_n, idx)
-            if i and step and step % self.reseed_freq == 0:
-                blk.attn.router.reseed(cls_n)
+            #if i and step and step % self.reseed_freq == 0:
+            #    blk.attn.router.reseed(cls_n)
                 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
