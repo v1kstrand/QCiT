@@ -147,7 +147,7 @@ class ContextAttention(nn.Module):
         else:
             sims_prime = sims
         idx = sims_prime.argmax(dim=-1)
-        return cls_n.detach().to(torch.float32), idx              # fp32 for EMA
+        return cls_n.detach().to(torch.float32), idx, sims              # fp32 for EMA
 
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
@@ -164,7 +164,7 @@ class ContextAttention(nn.Module):
         P = xp.size(1)
         assert R + P == N
 
-        cls_n, idx = self.route(x[:, 0, :])                               # [B]
+        cls_n, idx, sims = self.route(x[:, 0, :])                               # [B]
         q_ctx      = self.Q_banks.index_select(0, idx)                    # [B, K, D]
         ctx_p      = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp   # [B, K, D]
         ctx        = torch.cat([xreg, ctx_p], dim=1)                      # [B, R+K, D]
@@ -172,7 +172,7 @@ class ContextAttention(nn.Module):
         k, v       = ctx_kv[0], ctx_kv[1]                                 # [B, H, R+K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), cls_n, idx          # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (cls_n, idx, sims)          # [B, N, D]
     
 # # Block
 
