@@ -117,12 +117,12 @@ class OptScheduler:
         self.exp = exp
         self.magic = 10
         self.pause = opt_args.get("pause", False)
-        self.pause_steps = 0
-        if exp is not None:
-            print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
-        
+        self.pause_steps = 0        
         if self.pause:
             print(f"{name} Scheduler Is Paused")
+            
+        if exp is not None:
+            print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
     def __call__(self, step: int=None):
         if self.pause:
