@@ -77,20 +77,42 @@ def load_data(args):
 
     return {"train_loader" : train_loader, "val_loader" : val_loader, "mixup" : mixup_fn}
 
-
+def load_checkpoint(cp_path, models, schedulers, args):
+    print(f"INFO: Loading model from checkpoint: {cp_path}")
+    try:
+        checkpoint = torch.load(cp_path, map_location="cpu")
+    except Exception:
+        assert cp_path == args.exp_dir / "model.pth", "Loading failed"
+        checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
+    for n in checkpoint["model"]:
+        if n not in models:
+            print(f"Warning: Model {n} not found in experiment")
+            continue
+        models[n].load_state_dict(checkpoint["model"][n])
+        schedulers[n].load_state_dict(checkpoint["scheduler"][n])
+        models[n].backward.optimizer = schedulers[n].optimizer
+        models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
+        models[n].ema_sd = checkpoint["ema_sd"][n]
+        
+        for p_name, p in models[n].ema_sd["par"].items():
+            models[n].ema_sd["par"][p_name] = p.cuda()
+            
+        for b_name, b in models[n].ema_sd["buf"].items():
+            models[n].ema_sd["buf"][b_name] = b.cuda()
+        print(f"INFO: Checkpoint ({n}) Successfully Loaded")
+        
 def load_model(args):
     for m in args.opt["log"]:
         assert m in args.models, f"{m} in 'args.opt.log' but not in models"
     for m in args.opt:
-        if m in ("default", "log"):
-            continue
-        assert m in args.models, f"{m} in 'args.opt' but not in models"
+        if m not in ("default", "log"):
+            assert m in args.models, f"{m} in 'args.opt' but not in models"
 
     models = nn.ModuleDict()
     schedulers = {}
     scalers = {}
 
-    for name, kw in args.models.items():
+    for name in args.models:
         models[name] = m = OuterModel(args, name).cuda()
         m.ema_sd = set_ema_sd(m)
 
@@ -115,29 +137,7 @@ def load_model(args):
     )
     
     if checkpoint_path and not args.exp_init:
-        print(f"INFO: Loading model from checkpoint: {checkpoint_path}")
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        except Exception:
-            assert checkpoint_path == args.exp_dir / "model.pth", "Loading failed"
-            checkpoint = torch.load(args.exp_dir / "model_prev.pth", map_location="cpu")
-        for n in checkpoint["model"]:
-            if n not in models:
-                print(f"Warning: Model {n} not found in experiment")
-                continue
-            models[n].load_state_dict(checkpoint["model"][n])
-            schedulers[n].load_state_dict(checkpoint["scheduler"][n])
-            models[n].backward.optimizer = schedulers[n].optimizer
-            models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
-            models[n].ema_sd = checkpoint["ema_sd"][n]
-            
-            for p_name, p in models[n].ema_sd["par"].items():
-                models[n].ema_sd["par"][p_name] = p.cuda()
-                
-            for b_name, b in models[n].ema_sd["buf"].items():
-                models[n].ema_sd["buf"][b_name] = b.cuda()
-                
-            print(f"INFO: Checkpoint ({n}) Successfully Loaded")
+        load_checkpoint(checkpoint_path, models, schedulers, args)
     else:
         print("INFO: Initializing new model")
     args.exp_init = False

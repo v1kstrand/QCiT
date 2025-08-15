@@ -116,11 +116,21 @@ class OptScheduler:
         self.name = name
         self.exp = exp
         self.magic = 10
+        self.pause = opt_args.get("pause", False)
+        self.pause_steps = 0
         if exp is not None:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
+        
+        if self.pause:
+            print(f"{name} Scheduler Is Paused")
 
     def __call__(self, step: int=None):
+        if self.pause:
+            self.pause_steps += 1
+            return
+        
         step = step if step is not None else self.curr_step
+        step -= self.pause_steps
         if step <= self.wu_steps:
             lr_curr = self._set_warm_up(step)
             wd_curr = self.wd_start
@@ -184,7 +194,8 @@ class OptScheduler:
             "wd_start": self.wd_start,
             "wd_end": self.wd_end,
             "curr_step": self.curr_step,
-            "name" : self.name
+            "name" : self.name,
+            "pause_steps" : self.pause_steps
         }
 
     def load_state_dict(self, sd):

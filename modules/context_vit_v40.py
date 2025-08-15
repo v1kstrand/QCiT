@@ -91,11 +91,10 @@ class Attention(nn.Module):
         return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
 
 class EMARouter(nn.Module):
-    def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0, min_share=0.05, ema_usage = 0.99):
+    def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0, ema_usage = 0.99):
         super().__init__()
         self.D, self.M, self.ema_m = D, M, ema_m
-        self.eps = eps  
-        self.min_share = min_share
+        self.eps = eps
         self.ema_usage = ema_usage
         
         with torch.no_grad():
@@ -120,7 +119,7 @@ class EMARouter(nn.Module):
         cent  = self.centroids.to(cls_n.dtype)
         sims = cls_n @ cent.t()
         idx   = sims.argmax(dim=-1)
-        return cls_n.detach().to(torch.float32), idx, sims 
+        return cls_n.detach().to(torch.float32), idx, sims
 
     @torch.no_grad()
     def ema_update(self, cls_n: torch.Tensor, idx: torch.Tensor):
@@ -137,32 +136,6 @@ class EMARouter(nn.Module):
             mean = self.sum_buf[used] / (self.cnt_buf[used].unsqueeze(1) + self.eps)
             upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
             self.centroids[used].copy_(upd)
-
-        #total = self.cnt_buf.sum().clamp_min(1)
-        #share = (self.cnt_buf / total).to(self.usage_ema.dtype)
-        #self.usage_ema.mul_(self.ema_usage).add_((1 - self.ema_usage) * share)
-
-
-    @torch.no_grad()
-    def reseed(self, cls_source: torch.Tensor):
-        weak = self.usage_ema < self.min_share
-        if not weak.any() or cls_source.numel() == 0:
-            return
-
-        # farthest-point reseed (cosine space)
-        cent = F.normalize(self.centroids, dim=-1)               # [M,D]
-        sims = cls_source @ cent.t()                             # [B,M]
-        cover = sims.max(dim=1).values                           # nearest-centroid sim per sample
-        order = torch.argsort(cover, descending=False)           # farthest first
-
-        weak_idx = torch.where(weak)[0]
-        k = min(weak_idx.numel(), order.numel())
-        if k == 0:
-            return
-        print(f"DEBUG: Reseed {k} centroids")
-        picks = order[:k]
-        self.centroids[weak_idx[:k]].copy_(cls_source[picks])
-
 
 class ContextAttention(nn.Module):
     def __init__(
@@ -223,7 +196,6 @@ class ContextAttention(nn.Module):
         return       self.out_drop(self.proj_out(y)), (cls_n, idx, sims)          # [B, N, D]
     
 # # Block
-
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
     if drop_prob == 0.0 or not training:
         return x
@@ -309,17 +281,14 @@ class Block(nn.Module):
         self.sample_drop_ratio = drop_path
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        # precompute attention branch once
         y_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
         attn_out = self.ls1(y_attn)                     # [B,N,D]
 
-        # FFN residual func stays as-is
         def ffn_residual_func(u: Tensor) -> Tensor:
             return self.ls2(self.mlp(self.norm2(u)))
 
         if self.training and self.sample_drop_ratio > 0.1:
-            # pass a const-returning func (ignores its input)
-            assert False, "not implemented yet (ignore this for now bc i use 0.1 as default)"
+            assert False, "not implemented yet"
             x = drop_add_residual_stochastic_depth(
                 x,
                 residual_func=lambda _: attn_out,
@@ -347,7 +316,7 @@ def drop_add_residual_stochastic_depth(
     # 1) extract subset using permutation
     b, n, d = x.shape
     sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
-    brange = (torch.randperm(b, device=x.device))[:sample_subset_size]
+    brange = torch.randperm(b, device=x.device)[:sample_subset_size]
     x_subset = x[brange]
     # 2) apply residual_func to get residual
     residual = residual_func(x_subset)
@@ -502,7 +471,6 @@ class ContextViTv40(nn.Module):
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
         num_banks: int = 4,           # M (banks)
         ema_momentum: float = 0.95,   # EMA for centroids
-        reseed_freq = 1000,
     ):
         """
         Args:
@@ -533,7 +501,6 @@ class ContextViTv40(nn.Module):
         self.num_prototypes = num_prototypes
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
-        self.reseed_freq = reseed_freq
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -599,8 +566,6 @@ class ContextViTv40(nn.Module):
             blk = self.blocks[i]
             cls_n, idx, _ = cache[i]
             blk.attn.router.ema_update(cls_n, idx)
-            #if i and step and step % self.reseed_freq == 0:
-            #    blk.attn.router.reseed(cls_n)
                 
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
