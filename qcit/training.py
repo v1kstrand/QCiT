@@ -79,7 +79,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():
-                        exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step)
+                        exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step())
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:

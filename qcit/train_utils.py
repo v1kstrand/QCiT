@@ -117,9 +117,9 @@ class OptScheduler:
         self.exp = exp
         self.magic = 10
         self.pause = opt_args.get("pause", False)
-        self.pause_steps = 0        
+        self.pause_steps = 0
         if self.pause:
-            print(f"{name} Scheduler Is Paused")
+            print(f"{name} Scheduler is Paused")
             
         if exp is not None:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
@@ -142,6 +142,9 @@ class OptScheduler:
         if self.exp is not None and step % self.magic == 0:
             self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
             self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
+            
+    def curr_step(self):
+        return self.curr_step + self.pause_steps
 
     def _set_warm_up(self, step: int):
         curr = 0
