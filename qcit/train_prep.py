@@ -91,7 +91,7 @@ def load_checkpoint(cp_path, models, schedulers, args):
         models[n].load_state_dict(checkpoint["model"][n])
         schedulers[n].load_state_dict(checkpoint["scheduler"][n])
         models[n].backward.optimizer = schedulers[n].optimizer
-        models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
+        #models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
         models[n].ema_sd = checkpoint["ema_sd"][n]
         
         for p_name, p in models[n].ema_sd["par"].items():
