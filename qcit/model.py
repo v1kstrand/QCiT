@@ -111,7 +111,7 @@ class OuterModel(nn.Module):
 class PushGrad(nn.Module):
     def __init__(self, model):
         super().__init__()
-        self.params = list(model.parameters())        
+        self.params = list(model.parameters())
         
     def set_optimizer(self, optimizer):
         self.optimizer = optimizer
