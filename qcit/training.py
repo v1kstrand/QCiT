@@ -14,7 +14,7 @@ from .utils import to_min, get_time
 
 @torch.no_grad()
 def validate(model_dict, data_dict, args, exp):
-    (models, sched, _),  loader = model_dict.values(), data_dict["val_loader"]
+    (models, sched),  loader = model_dict.values(), data_dict["val_loader"]
 
     curr_sd = {}
     for name, model in models.items():
