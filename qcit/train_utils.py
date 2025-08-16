@@ -126,10 +126,10 @@ class OptScheduler:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
     def __call__(self, step: int=None):
-        step = step if step is not None else self.curr_step
         if self.pause:
             self.pause_steps += 1
         else:
+            step = step if step is not None else self.curr_step
             step -= self.pause_steps
             if step <= self.wu_steps:
                 self.lr_curr = self._set_warm_up(step)
