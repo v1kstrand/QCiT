@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Imports
-
-# In[1]:
-
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
@@ -17,27 +13,7 @@ from torch import Tensor
 from torch.nn.attention import SDPBackend
 import torch.nn.functional as F
 
-
-# # Utils
-
-# In[2]:
-
-
-class LayerScale(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        init_values: Union[float, Tensor] = 1e-4,
-        inplace: bool = False,
-    ) -> None:
-        super().__init__()
-        self.inplace = inplace
-        self.gamma = nn.Parameter(init_values * torch.ones(dim))
-        self.gamma.no_wd = True
-
-    def forward(self, x: Tensor) -> Tensor:
-        return x.mul_(self.gamma) if self.inplace else x * self.gamma
-
+# FFN
 
 class Mlp(nn.Module):
     def __init__(
@@ -64,7 +40,9 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
-    
+
+# Attention
+
 class Attention(nn.Module):
     def __init__(
         self,
@@ -91,11 +69,10 @@ class Attention(nn.Module):
         return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
 
 class EMARouter(nn.Module):
-    def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0, ema_usage = 0.99):
+    def __init__(self, D: int, M: int, ema_m: float = 0.995, eps = 1.0):
         super().__init__()
         self.D, self.M, self.ema_m = D, M, ema_m
         self.eps = eps
-        self.ema_usage = ema_usage
         
         with torch.no_grad():
             A = torch.randn(D, M, dtype=torch.float32)
@@ -103,8 +80,7 @@ class EMARouter(nn.Module):
             C = F.normalize(Q.t().contiguous(), dim=-1) # [M,D]
         self.register_buffer("centroids", C)
         self.register_buffer("sum_buf", torch.zeros(M, D))
-        self.register_buffer("cnt_buf", torch.zeros(M))
-        self.register_buffer("usage_ema", torch.zeros(M))   # share per bank
+        self.register_buffer("count_buf", torch.zeros(M))
 
     @torch.no_grad()
     def route(self, cls: torch.Tensor):
@@ -130,10 +106,10 @@ class EMARouter(nn.Module):
         """
         self.sum_buf.zero_().index_add_(0, idx, cls_n)         # [M, D]
         ones = torch.ones_like(idx, dtype=self.sum_buf.dtype)
-        self.cnt_buf.zero_().index_add_(0, idx, ones)          # [M]
-        used = self.cnt_buf > 0
+        self.count_buf.zero_().index_add_(0, idx, ones)          # [M]
+        used = self.count_buf > 0
         if used.any():
-            mean = self.sum_buf[used] / (self.cnt_buf[used].unsqueeze(1) + self.eps)
+            mean = self.sum_buf[used] / (self.count_buf[used].unsqueeze(1) + self.eps)
             upd  = F.normalize(self.ema_m * self.centroids[used] + (1 - self.ema_m) * mean, dim=-1)
             self.centroids[used].copy_(upd)
 
@@ -141,7 +117,6 @@ class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        num_registers: int,           # including CLS
         num_prototypes: int = 128,    # K
         num_heads: int = 6,
         qkv_bias: bool = False,
@@ -154,14 +129,14 @@ class ContextAttention(nn.Module):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
-        self.K, self.R, self.M = num_prototypes, num_registers, num_banks
+        self.K, self.M = num_prototypes, num_banks
 
         self.Q_banks = nn.Parameter(torch.randn(self.M, self.K, self.D))
         self.router = EMARouter(dim, num_banks, ema_momentum)
 
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
-        self.proj_out = nn.Linear(dim, dim,      bias=proj_bias)
+        self.proj_out = nn.Linear(dim, dim,   bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
@@ -179,49 +154,52 @@ class ContextAttention(nn.Module):
         x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
         """
         B, N, D = x.shape
-        K, H, d, R = self.K, self.H, self.d, self.R
-        xreg = x[:, :R, :]          # [B, R, D]
-        xp   = x[:, R:, :]          # [B, P, D]
-        P = xp.size(1)
-        assert R + P == N
+        K, H, d = self.K, self.H, self.d
 
-        cls_n, idx, sims = self.router.route(x[:, 0, :])                               # [B]
-        q_ctx      = self.Q_banks.index_select(0, idx)                    # [B, K, D]
-        ctx_p      = F.softmax(q_ctx @ xp.transpose(1, 2), dim=-1) @ xp   # [B, K, D]
-        ctx        = torch.cat([xreg, ctx_p], dim=1)                      # [B, R+K, D]
-        ctx_kv     = self.proj_ctx(ctx).reshape(B, R+K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v       = ctx_kv[0], ctx_kv[1]                                 # [B, H, R+K, d]
+        cls_n, idx, sims = self.router.route(x[:, 0, :])                   # [B]
+        q_ctx      = self.Q_banks.index_select(0, idx)                     # [B, K, D]
+        ctx        = F.softmax(q_ctx @ x.transpose(1, 2), dim=-1) @ x      # [B, K, D]             
+        ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v       = ctx_kv[0], ctx_kv[1]                                  # [B, H, K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
-        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), (cls_n, idx, sims)          # [B, N, D]
+        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)   # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (cls_n, idx, sims)   # [B, N, D]
     
-# # Block
-def drop_path(x, drop_prob: float = 0.0, training: bool = False):
-    if drop_prob == 0.0 or not training:
-        return x
-    keep = 1.0 - float(drop_prob)              # compile-time constant
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-    mask = x.new_empty(shape, dtype=torch.float32).bernoulli_(keep).div_(keep).to(x.dtype)
-    return x * mask
 
+# Block
 
-class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+class ResidualAdd(nn.Module):
+    """
+    y = x + res * (gamma * scale)
+    where scale is per-sample DropPath factor in {0, 1/keep}.
+    """
+    def __init__(self, dim: int, drop_prob: float = 0.0, ls_init: float = None):
+        super().__init__()
+        self.drop_prob = float(drop_prob) 
+        self.gamma = nn.Parameter(torch.full((dim,), ls_init)) if ls_init is not None else None
+        if ls_init is not None:
+            self.gamma.no_wd = True
+        assert drop_prob == 0 or ls_init is not None
+            
+    def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
+        if self.gamma is None:
+            return x + res
+        
+        if not self.training or self.drop_prob == 0.0:
+            return x + res * self.gamma
 
-    def __init__(self, drop_prob=None):
-        super(DropPath, self).__init__()
-        self.drop_prob = drop_prob
-
-    def forward(self, x):
-        return drop_path(x, self.drop_prob, self.training)
-
-
+        keep = 1.0 - self.drop_prob
+        shape = (res.shape[0],) + (1,) * (res.ndim - 1)
+        scale = (torch.rand(shape, dtype=res.dtype, device=res.device) < keep)
+        scale = scale.to(res.dtype) / keep
+        return x + res * (self.gamma * scale)
+    
+    
 class Block(nn.Module):
     def __init__(
         self,
         dim: int,
         num_heads: int,
-        num_registers: int,
         num_prototypes=64,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
@@ -235,6 +213,7 @@ class Block(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         num_banks: int = 4,           # M (banks)
         ema_momentum: float = 0.995,   # EMA for centroids
+        skip_attn_drop_path=False,
         block_idx=-1
     ) -> None:
         super().__init__()
@@ -257,16 +236,13 @@ class Block(nn.Module):
                 attn_drop=attn_drop,
                 proj_drop=drop,
                 num_prototypes=num_prototypes,
-                num_registers=num_registers,
                 num_banks=num_banks,
                 ema_momentum=ema_momentum,
             )
-        self.ls1 = (
-            LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
-        )
-        self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        attn_dp = 0 if skip_attn_drop_path else drop_path
+        self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
+        
         self.norm2 = norm_layer(dim)
-
         self.mlp = Mlp(
             in_features=dim,
             hidden_features=int(dim * mlp_ratio),
@@ -274,70 +250,17 @@ class Block(nn.Module):
             drop=drop,
             bias=ffn_bias,
         )
-        self.ls2 = (
-            LayerScale(dim, init_values=layerscale) if layerscale else nn.Identity()
-        )
-        self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.sample_drop_ratio = drop_path
+        self.residual_add_ffn = ResidualAdd(dim, drop_path, layerscale)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        y_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
-        attn_out = self.ls1(y_attn)                     # [B,N,D]
-
-        def ffn_residual_func(u: Tensor) -> Tensor:
-            return self.ls2(self.mlp(self.norm2(u)))
-
-        if self.training and self.sample_drop_ratio > 0.1:
-            assert False, "not implemented yet"
-            x = drop_add_residual_stochastic_depth(
-                x,
-                residual_func=lambda _: attn_out,
-                sample_drop_ratio=self.sample_drop_ratio,
-            )
-            x = drop_add_residual_stochastic_depth(
-                x,
-                residual_func=ffn_residual_func,
-                sample_drop_ratio=self.sample_drop_ratio,
-            )
-        elif self.training and self.sample_drop_ratio > 0.0:
-            x = x + self.drop_path1(attn_out)
-            x = x + self.drop_path2(ffn_residual_func(x))
-        else:
-            x = x + attn_out
-            x = x + ffn_residual_func(x)
-
+        x_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
+        x = self.residual_add_attn(x, x_attn)
+        x_ffn = self.mlp(self.norm2(x))
+        x = self.residual_add_ffn(x, x_ffn)
         return x, cache
 
-def drop_add_residual_stochastic_depth(
-    x: Tensor,
-    residual_func: Callable[[Tensor], Tensor],
-    sample_drop_ratio: float = 0.0,
-) -> Tensor:
-    # 1) extract subset using permutation
-    b, n, d = x.shape
-    sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
-    brange = torch.randperm(b, device=x.device)[:sample_subset_size]
-    x_subset = x[brange]
-    # 2) apply residual_func to get residual
-    residual = residual_func(x_subset)
-
-    x_flat = x.flatten(1)
-    residual = residual.flatten(1)
-
-    residual_scale_factor = b / sample_subset_size
-
-    # 3) add the residual
-    x_plus_residual = torch.index_add(
-        x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor
-    )
-    return x_plus_residual.view_as(x)
 
 # # Patch Embed
-
-# In[7]:
-
-
-# # Patch emb
 def make_2tuple(x):
     if isinstance(x, tuple):
         assert len(x) == 2
@@ -412,10 +335,6 @@ class PatchEmbed(nn.Module):
 
 
 # # Vit
-
-# In[ ]:
-
-
 def named_apply(
     fn: Callable, module: nn.Module, name="", depth_first=True, include_root=False
 ) -> nn.Module:
@@ -446,7 +365,7 @@ def init_weights_vit_timm(module: nn.Module):
         nn.init.constant_(module.weight, 1.0)
 
 
-class ContextViTv40(nn.Module):
+class ContextViTv41(nn.Module):
     def __init__(
         self,
         img_size=224,
@@ -471,6 +390,7 @@ class ContextViTv40(nn.Module):
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
         num_banks: int = 4,           # M (banks)
         ema_momentum: float = 0.95,   # EMA for centroids
+        skip_attn_drop_path = False
     ):
         """
         Args:
@@ -513,14 +433,14 @@ class ContextViTv40(nn.Module):
         num_tokens = 1 + self.n_registers + self.n_patches
         self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
-        norm_layer = partial(nn.LayerNorm, eps=1e-6)
+        norm_layer = partial(nn.LayerNorm, eps=1e-5)
 
         if drop_path_uniform is True:
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
             dpr[-1] = drop_path_rate
-            print(f"INFO: Drop Path Rates: {dpr}")
+        print(f"INFO: Drop Path Rates: {[round(n, 3) for n in dpr]}")
 
         blocks_list = [
             Block(
@@ -534,11 +454,11 @@ class ContextViTv40(nn.Module):
                 norm_layer=norm_layer,
                 act_layer=act_layer,
                 layerscale=layerscale,
-                num_prototypes=num_prototypes-(n_registers+1),
-                num_registers=n_registers+1,
+                num_prototypes=num_prototypes,
                 num_banks=num_banks,
                 ema_momentum=ema_momentum,
-                block_idx=i
+                block_idx=i,
+                skip_attn_drop_path=skip_attn_drop_path
             )
             for i in range(depth)
         ]

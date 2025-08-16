@@ -130,7 +130,7 @@ class OptScheduler:
         if self.pause:
             self.pause_steps += 1
         else:
-            step = step if step is not None else self.curr_step
+            step = self.curr_step if step is None else step
             step -= self.pause_steps
             if step <= self.wu_steps:
                 self.lr_curr = self._set_warm_up(step)
