@@ -78,7 +78,7 @@ class OuterModel(nn.Module):
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
 
-            self.backward(self.inner, ce)
+            self.backward(ce)
             if hasattr(self.inner.model, "update"):
                 self.inner.model.update(cache, step)
 
@@ -118,14 +118,14 @@ class PushGrad(nn.Module):
         self.optimizer = optimizer
         self.gc = torch.tensor(optimizer.args["gc"])
         
-    def forward(self, _, loss):
+    def forward(self, loss):
         loss.backward()
         if self.gc > 0:
             nn.utils.clip_grad_norm_(self.params, max_norm=self.gc)
         self.optimizer.step()
         self.zero()
 
-    def _forward(self, _, loss):
+    def _forward(self, loss):
         self.scaler.scale(loss).backward()
         if self.gc > 0:
             self.scaler.unscale_(self.optimizer)

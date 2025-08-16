@@ -37,6 +37,7 @@ if "A100" in torch.cuda.get_device_name():
     CUDA_DEVICE = "A100"
 else:
     print("WARNING: A100 not found")
+    assert False
     AMP_DTYPE = torch.float16
     CUDA_DEVICE = torch.cuda.get_device_name()
 
