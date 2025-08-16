@@ -115,12 +115,20 @@ class PushGrad(nn.Module):
         self.scaler = scaler
         self.args = args
         self.gc = torch.tensor(self.optimizer.args["gc"])
+        self.params = list(self.parameters())
+        
+    def forward(self, _, loss):
+        loss.backward()
+        if self.gc > 0:
+            nn.utils.clip_grad_norm_(self.params, max_norm=self.gc)
+        self.optimizer.step()
+        self.zero()
 
-    def forward(self, model, loss):
+    def _forward(self, model, loss):
         self.scaler.scale(loss).backward()
         if self.gc > 0:
             self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.gc)
+            nn.utils.clip_grad_norm_(self.params, max_norm=self.gc)
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.zero()
