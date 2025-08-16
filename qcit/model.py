@@ -49,7 +49,7 @@ class OuterModel(nn.Module):
         self.args = args
         self.name = name
         self.inner = InnerModel(args, name)
-        self.backward = PushGrad()
+        self.backward = PushGrad(self.inner)
         self.ema_sd = self.last_top1 = None
         self.plot_freq = args.models[name].get("plot_freq", float("inf"))
 
@@ -109,9 +109,9 @@ class OuterModel(nn.Module):
  
 
 class PushGrad(nn.Module):
-    def __init__(self, optimizer=None, scaler=None, args=None):
+    def __init__(self, model, optimizer=None, scaler=None, args=None):
         super().__init__()
-        self.params = list(self.parameters())
+        self.params = list(model.parameters())
         self.optimizer = optimizer
         self.scaler = scaler
         self.args = args
@@ -124,7 +124,7 @@ class PushGrad(nn.Module):
         self.optimizer.step()
         self.zero()
 
-    def _forward(self, model, loss):
+    def _forward(self, _, loss):
         self.scaler.scale(loss).backward()
         if self.gc > 0:
             self.scaler.unscale_(self.optimizer)
