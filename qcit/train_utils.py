@@ -273,7 +273,7 @@ def profile_model(model_dict, x, y, args):
         zip_path = str(profile_path / file_name)
         shutil.make_archive(str(zip_path), 'zip', str(profile_path))
     
-    models = model_dict["models"].cuda().train()
+    models = model_dict["model"].cuda().train()
     for name, model in models.items():
         reset(0)
         run_profiling(model, name)
