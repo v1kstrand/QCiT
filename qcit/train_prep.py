@@ -129,7 +129,7 @@ def load_model(args):
         exp = args.exp if name in args.opt["log"] else None
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
         scalers[name] = torch.amp.GradScaler("cuda")
-        m.backward.optimizer = opt
+        m.backward.set_optimizer(opt)
         if hasattr(m.inner.model, "init"):
             m.inner.model.init(name)
 
