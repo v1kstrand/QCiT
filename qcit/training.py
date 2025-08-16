@@ -34,14 +34,14 @@ def validate(model_dict, data_dict, args, exp):
 
     for name, s in stats.items():
         for k, v in s.items():
-            exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step)
+            exp.log_metric(k, sum(v) / len(v), step=sched[name].get_step())
             if "Top-1" in k:
                 models[name].val_top1_acc = sum(v) / len(v)
 
     for name, model in models.items():
         if hasattr(model, "val_top1_acc") and hasattr(model, "train_top1_acc"):
             ratio = model.val_top1_acc / model.train_top1_acc
-            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].curr_step)
+            exp.log_metric(f"3-Stats/{name} Top1-Acc Ratio", ratio, step=sched[name].get_step())
     exp.log_metric(f"General/Time Val {args.opt['log'][0]}", to_min(val_time), step=curr_epoch)
 
     for name, model in models.items():
@@ -79,7 +79,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
             if step and step % args.freq["stats"] == 0 and step > start_step + magic:
                 for name, s in stats.items():
                     for k, v in s.items():
-                        exp.log_metric(k, sum(v) / len(v), step=sched[name].curr_step())
+                        exp.log_metric(k, sum(v) / len(v), step=sched[name].get_step())
                         if "Top-1" in k:
                             models[name].train_top1_acc = sum(v) / len(v)
                 if stats_time is not None:
@@ -96,7 +96,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
            
             batch_time = time.perf_counter()
             for name, model in models.items():
-                update_ema_sd(model, sched[name].curr_step)
+                update_ema_sd(model, sched[name].get_step())
 
         # -- Epoch End --
         if not init_run:
