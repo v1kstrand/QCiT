@@ -190,7 +190,7 @@ class ResidualAdd(nn.Module):
 
         keep = 1.0 - self.drop_prob
         shape = (res.shape[0],) + (1,) * (res.ndim - 1)
-        scale = (torch.rand(shape, dtype=res.dtype, device=res.device) < keep)
+        scale = torch.rand(shape, dtype=res.dtype, device=res.device) < keep
         scale = scale.to(res.dtype) / keep
         return x + res * (self.gamma * scale)
     

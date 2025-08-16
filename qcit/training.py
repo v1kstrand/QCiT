@@ -101,7 +101,7 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
         # -- Epoch End --
         if not init_run:
             exp.log_metric(f"General/Time Epoch {tracker.name}", to_min(epoch_time), step=curr_epoch)
-        init_run = False                         
+        init_run = False                  
 
         if args.freq["save"] == 1 or (
             curr_epoch and curr_epoch % args.freq["save"] == 0
