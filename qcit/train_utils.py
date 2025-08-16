@@ -143,7 +143,7 @@ class OptScheduler:
             self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
             self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
             
-    def curr_step(self):
+    def get_step(self):
         return self.curr_step + self.pause_steps
 
     def _set_warm_up(self, step: int):
