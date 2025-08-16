@@ -101,6 +101,8 @@ def load_checkpoint(cp_path, models, schedulers, args):
             models[n].ema_sd["buf"][b_name] = b.cuda()
         print(f"INFO: Checkpoint ({n}) Successfully Loaded")
         
+        schedulers[n].deb()
+        
 def load_model(args):
     for m in args.opt:
         if m not in ("default", "log"):
