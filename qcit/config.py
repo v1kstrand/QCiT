@@ -135,6 +135,7 @@ def set_torch_config_v2(safe_config: bool = True):
     ind.epilogue_fusion = True
     ind.shape_padding = True
     ind.b2b_gemm_pass = True
+    ind.use_cudagraphs = True
 
     # Numeric / codegen safety vs speed
     ind.cpp.enable_floating_point_contract_flag = "fast"

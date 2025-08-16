@@ -123,7 +123,7 @@ def load_model(args):
                 opt_args[k] = v
 
         params = init_model(m, opt_args, args, name in args.opt["log"])
-        opt = torch.optim.AdamW([*params.values()], fused=True)
+        opt = torch.optim.AdamW([*params.values()], fused=True, capturable=True)
         opt.args = opt_args
 
         exp = args.exp if name in args.opt["log"] else None
