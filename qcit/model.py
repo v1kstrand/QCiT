@@ -54,6 +54,7 @@ class OuterModel(nn.Module):
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
+        self.backward.compile(backend="inductor", fullgraph=True, dynamic=False)
 
     def forward(self, imgs, labels, cum_stats, mixup=False, step=0, profiling=False):
         stats, time_it = {}, step % self.args.freq["time_it"]
