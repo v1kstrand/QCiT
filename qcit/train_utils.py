@@ -127,7 +127,6 @@ class OptScheduler:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
     def __call__(self, step: int=None):
-        
         if self.pause:
             self.pause_steps += 1
         else:
