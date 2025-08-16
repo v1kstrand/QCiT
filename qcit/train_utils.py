@@ -143,7 +143,7 @@ class OptScheduler:
         self.curr_step += 1
             
     def get_step(self):
-        return self.curr_step 
+        return self.curr_step
 
     def _set_warm_up(self, step: int):
         curr = 0
