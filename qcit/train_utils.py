@@ -139,8 +139,8 @@ class OptScheduler:
                 self.wd_curr = self._set_wd_cosine(step)
 
         if self.exp is not None and step % self.magic == 0 and self.lr_curr != -1:
-            self.exp.log_metric(f"General/Opt LR {self.name}", self.lr_curr, step=step)
-            self.exp.log_metric(f"General/Opt WD {self.name}", self.wd_curr, step=step)
+            self.exp.log_metric(f"General/Opt LR {self.name}", self.lr_curr, step=self.curr_step)
+            self.exp.log_metric(f"General/Opt WD {self.name}", self.wd_curr, step=self.curr_step)
         self.curr_step += 1
             
     def get_step(self):
