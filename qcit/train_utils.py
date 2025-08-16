@@ -220,7 +220,6 @@ def save_model(model_dict, args, file_name):
         {
             "model": {n: m.state_dict() for n, m in model_dict["model"].items()},
             "scheduler": {n: o.state_dict() for n, o in model_dict["scheduler"].items()},
-            "scaler": {n: s.state_dict() for n, s in model_dict["scaler"].items()},
             "ema_sd" : {n : m.ema_sd for n, m in model_dict["model"].items()}
         },
         save_path,
@@ -241,7 +240,6 @@ def profile_model(model_dict, x, y, args):
     org_states = {
         "model": {n: m.state_dict() for n, m in model_dict["model"].items()},
         "scheduler": {n: o.state_dict() for n, o in model_dict["scheduler"].items()},
-        "scaler": {n: s.state_dict() for n, s in model_dict["scaler"].items()},
     }
 
     def run_profiling(model, model_name):
@@ -283,6 +281,5 @@ def profile_model(model_dict, x, y, args):
         models[n].load_state_dict(org_states["model"][n])
         schedulers[n].load_state_dict(org_states["scheduler"][n])
         models[n].backward.optimizer = schedulers[n].optimizer
-        models[n].backward.scaler.load_state_dict(org_states["scaler"][n])
         
     args.profile_models = False

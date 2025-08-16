@@ -62,7 +62,7 @@ class OuterModel(nn.Module):
         if profiling:
             self.backward.zero()
             ce, acc1, acc5, _ = self.inner(imgs, labels, mixup)
-            self.backward(self.inner, ce)
+            self.backward(ce)
             return
         if self.training:
             self.backward.zero()
@@ -123,15 +123,6 @@ class PushGrad(nn.Module):
         if self.gc > 0:
             nn.utils.clip_grad_norm_(self.params, max_norm=self.gc)
         self.optimizer.step()
-        self.zero()
-
-    def _forward(self, loss):
-        self.scaler.scale(loss).backward()
-        if self.gc > 0:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.params, max_norm=self.gc)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
         self.zero()
 
     def zero(self):

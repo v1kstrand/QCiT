@@ -7,7 +7,7 @@ from torchvision import transforms
 from timm.data import create_transform, Mixup
 
 from modules.utils import IdleMonitor, delete_in_parallel
-from .model import OuterModel, PushGrad
+from .model import OuterModel
 from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, set_torch_config_v2
 from .data import HFImageDataset
 from .train_utils import init_model, OptScheduler, dump_args, set_ema_sd
@@ -91,7 +91,6 @@ def load_checkpoint(cp_path, models, schedulers, args):
         models[n].load_state_dict(checkpoint["model"][n])
         schedulers[n].load_state_dict(checkpoint["scheduler"][n])
         models[n].backward.optimizer = schedulers[n].optimizer
-        #models[n].backward.scaler.load_state_dict(checkpoint["scaler"][n])
         models[n].ema_sd = checkpoint["ema_sd"][n]
         
         for p_name, p in models[n].ema_sd["par"].items():
@@ -111,8 +110,6 @@ def load_model(args):
 
     models = nn.ModuleDict()
     schedulers = {}
-    scalers = {}
-
     for name in args.models:
         models[name] = m = OuterModel(args, name).cuda()
         m.ema_sd = set_ema_sd(m)
@@ -128,7 +125,6 @@ def load_model(args):
 
         exp = args.exp if name in args.opt["log"] else None
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
-        scalers[name] = torch.amp.GradScaler("cuda")
         m.backward.set_optimizer(opt)
         if hasattr(m.inner.model, "init"):
             m.inner.model.init(name)
@@ -148,7 +144,7 @@ def load_model(args):
         for m in models.values():
             m.compile_model()
 
-    return {"model" : models, "scheduler" :schedulers, "scaler" : scalers}
+    return {"model" : models, "scheduler" :schedulers}
 
 def prep_training(dict_args, exp):
     set_torch_config_v2()
