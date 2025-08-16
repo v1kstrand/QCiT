@@ -38,8 +38,6 @@ if "A100" in torch.cuda.get_device_name():
 else:
     print("WARNING: A100 not found")
     assert False
-    AMP_DTYPE = torch.float16
-    CUDA_DEVICE = torch.cuda.get_device_name()
 
 def set_torch_config():
     torch.set_float32_matmul_precision("medium")
