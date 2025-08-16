@@ -135,6 +135,7 @@ def set_torch_config_v2(safe_config: bool = True):
     ind.epilogue_fusion = True
     ind.shape_padding = True
     ind.b2b_gemm_pass = True
+    ind.use_cudagraphs = True
 
     # Numeric / codegen safety vs speed
     ind.cpp.enable_floating_point_contract_flag = "fast"
@@ -142,16 +143,16 @@ def set_torch_config_v2(safe_config: bool = True):
     ind.cuda.use_fast_math = (not safe_config)
 
     # Triton tiling / reductions (mostly fine either way)
-    ind.triton.max_tiles = 3
+    #ind.triton.max_tiles = 3
     ind.triton.prefer_nd_tiling = True
     ind.triton.tiling_prevents_pointwise_fusion = False
     ind.triton.tiling_prevents_reduction_fusion = False
     ind.triton.persistent_reductions = True
     ind.triton.cooperative_reductions = True
-    ind.triton.multi_kernel = 1
-    ind.triton.divisible_by_16 = True
-    ind.triton.spill_threshold = 16 if safe_config else 32
-    ind.triton.codegen_upcast_to_fp32 = True # TODO -> safe_config
+    #ind.triton.multi_kernel = 1
+    #ind.triton.divisible_by_16 = True
+    #ind.triton.spill_threshold = 16 if safe_config else 32
+    #ind.triton.codegen_upcast_to_fp32 = True 
 
     # Host compile / CUDA codegen
     ind.cuda.compile_opt_level = "-O3"
