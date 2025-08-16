@@ -119,22 +119,14 @@ class OptScheduler:
         self.name = name
         self.exp = exp
         self.magic = 10
-        self.k = True
         
         if self.pause:
             print(f"{name} Scheduler is Paused")
             
         if exp is not None:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
-            
-    def deb(self):
-        print(f"DEBUG: init {self.name} - {self.curr_step} - {self.pause_steps}")
 
     def __call__(self, step: int=None):
-        if self.pause_steps and self.k:
-            self.curr_step += self.pause_steps
-            print(f"DEBUG: {self.name} - {self.curr_step} - {self.pause_steps}")
-            self.k = False
         
         if self.pause:
             self.pause_steps += 1
