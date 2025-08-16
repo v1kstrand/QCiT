@@ -49,12 +49,12 @@ class OuterModel(nn.Module):
         self.args = args
         self.name = name
         self.inner = InnerModel(args, name)
-        self.ema_sd = self.last_top1 = self.backward = None
+        self.backward = PushGrad()
+        self.ema_sd = self.last_top1 = None
         self.plot_freq = args.models[name].get("plot_freq", float("inf"))
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
-        self.backward.compile(backend="inductor", fullgraph=True, dynamic=False)
 
     def forward(self, imgs, labels, cum_stats, mixup=False, step=0, profiling=False):
         stats, time_it = {}, step % self.args.freq["time_it"]
@@ -109,13 +109,13 @@ class OuterModel(nn.Module):
  
 
 class PushGrad(nn.Module):
-    def __init__(self, optimizer, scaler, args):
+    def __init__(self, optimizer=None, scaler=None, args=None):
         super().__init__()
+        self.params = list(self.parameters())
         self.optimizer = optimizer
         self.scaler = scaler
         self.args = args
         self.gc = torch.tensor(self.optimizer.args["gc"])
-        self.params = list(self.parameters())
         
     def forward(self, _, loss):
         loss.backward()
