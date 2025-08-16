@@ -127,24 +127,23 @@ class OptScheduler:
     def __call__(self, step: int=None):
         if self.pause:
             self.pause_steps += 1
-            return
-        
-        step = step if step is not None else self.curr_step
-        step -= self.pause_steps
-        if step <= self.wu_steps:
-            lr_curr = self._set_warm_up(step)
-            wd_curr = self.wd_start
         else:
-            lr_curr = self._set_lr_cosine(step)
-            wd_curr = self._set_wd_cosine(step)
-        self.curr_step += 1
+            step = step if step is not None else self.curr_step
+            step -= self.pause_steps
+            if step <= self.wu_steps:
+                lr_curr = self._set_warm_up(step)
+                wd_curr = self.wd_start
+            else:
+                lr_curr = self._set_lr_cosine(step)
+                wd_curr = self._set_wd_cosine(step)
 
-        if self.exp is not None and step % self.magic == 0:
-            self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
-            self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
+            if self.exp is not None and step % self.magic == 0:
+                self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
+                self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
+        self.curr_step += 1
             
     def get_step(self):
-        return self.curr_step + self.pause_steps
+        return self.curr_step 
 
     def _set_warm_up(self, step: int):
         curr = 0

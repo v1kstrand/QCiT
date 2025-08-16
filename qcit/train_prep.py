@@ -102,11 +102,12 @@ def load_checkpoint(cp_path, models, schedulers, args):
         print(f"INFO: Checkpoint ({n}) Successfully Loaded")
         
 def load_model(args):
-    for m in args.opt["log"]:
-        assert m in args.models, f"{m} in 'args.opt.log' but not in models"
     for m in args.opt:
         if m not in ("default", "log"):
             assert m in args.models, f"{m} in 'args.opt' but not in models"
+    for m in args.opt["log"]:
+        assert m in args.models, f"{m} in 'args.opt.log' but not in models"
+    
 
     models = nn.ModuleDict()
     schedulers = {}
