@@ -112,13 +112,15 @@ class OptScheduler:
         self.lr_end = opt_args["lr_final"]
         self.wd_start = opt_args["wd_init"]
         self.wd_end = opt_args["wd_final"]
+        self.lr_curr = self.wd_curr = -1
         self.curr_step = 1
+        self.pause = opt_args.get("pause", False)
+        self.pause_steps = 0
         self.name = name
         self.exp = exp
         self.magic = 10
-        self.pause = opt_args.get("pause", False)
-        self.pause_steps = 0
-        self.lr_curr = self.wd_curr = -1
+        self.k = True
+        
         if self.pause:
             print(f"{name} Scheduler is Paused")
             
@@ -126,6 +128,11 @@ class OptScheduler:
             print(f"INFO: wu_steps: {self.wu_steps}, dec_steps: {self.dec_steps}")
 
     def __call__(self, step: int=None):
+        if self.pause_steps and self.k:
+            self.curr_step += self.pause_steps
+            print(f"{self.name} - {self.curr_step} - {self.pause_steps}")
+            self.k = False
+        
         if self.pause:
             self.pause_steps += 1
         else:
