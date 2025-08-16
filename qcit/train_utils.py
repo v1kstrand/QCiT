@@ -118,6 +118,7 @@ class OptScheduler:
         self.magic = 10
         self.pause = opt_args.get("pause", False)
         self.pause_steps = 0
+        self.lr_curr = self.wd_curr = -1
         if self.pause:
             print(f"{name} Scheduler is Paused")
             
@@ -131,15 +132,15 @@ class OptScheduler:
         else:
             step -= self.pause_steps
             if step <= self.wu_steps:
-                lr_curr = self._set_warm_up(step)
-                wd_curr = self.wd_start
+                self.lr_curr = self._set_warm_up(step)
+                self.wd_curr = self.wd_start
             else:
-                lr_curr = self._set_lr_cosine(step)
-                wd_curr = self._set_wd_cosine(step)
+                self.lr_curr = self._set_lr_cosine(step)
+                self.wd_curr = self._set_wd_cosine(step)
 
-        if self.exp is not None and step % self.magic == 0:
-            self.exp.log_metric(f"General/Opt LR {self.name}", lr_curr, step=step)
-            self.exp.log_metric(f"General/Opt WD {self.name}", wd_curr, step=step)
+        if self.exp is not None and step % self.magic == 0 and self.lr_curr != -1:
+            self.exp.log_metric(f"General/Opt LR {self.name}", self.lr_curr, step=step)
+            self.exp.log_metric(f"General/Opt WD {self.name}", self.wd_curr, step=step)
         self.curr_step += 1
             
     def get_step(self):
@@ -197,7 +198,9 @@ class OptScheduler:
             "wd_end": self.wd_end,
             "curr_step": self.curr_step,
             "name" : self.name,
-            "pause_steps" : self.pause_steps
+            "pause_steps" : self.pause_steps,
+            "lr_curr" : self.lr_curr,
+            "wd_curr" : self.wd_curr
         }
 
     def load_state_dict(self, sd):
