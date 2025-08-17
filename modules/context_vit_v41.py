@@ -4,6 +4,7 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+import math
 
 
 import torch
@@ -150,15 +151,12 @@ class ContextAttention(nn.Module):
 
             
     def forward(self, x):
-        """
-        x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
-        """
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
         cls_n, idx, sims = self.router.route(x[:, 0, :])                   # [B]
         q_ctx      = self.Q_banks.index_select(0, idx)                     # [B, K, D]
-        ctx        = F.softmax(q_ctx @ x.transpose(1, 2), dim=-1) @ x      # [B, K, D]             
+        ctx        = F.softmax(q_ctx @ x.transpose(1, 2), dim=-1) @ x      # [B, K, D]        
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                  # [B, H, K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
@@ -169,10 +167,6 @@ class ContextAttention(nn.Module):
 # Block
 
 class ResidualAdd(nn.Module):
-    """
-    y = x + res * (gamma * scale)
-    where scale is per-sample DropPath factor in {0, 1/keep}.
-    """
     def __init__(self, dim: int, drop_prob: float = 0.0, ls_init: float = None):
         super().__init__()
         self.drop_prob = float(drop_prob) 
@@ -332,6 +326,12 @@ class PatchEmbed(nn.Module):
         if not self.flatten_embedding:
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
+    
+    def reset_parameters(self):
+        k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
+        nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
+        if self.proj.bias is not None:
+            nn.init.uniform_(self.proj.bias, -math.sqrt(k), math.sqrt(k))
 
 
 # # Vit
@@ -363,6 +363,8 @@ def init_weights_vit_timm(module: nn.Module):
     elif isinstance(module, nn.LayerNorm):
         nn.init.constant_(module.bias, 0)
         nn.init.constant_(module.weight, 1.0)
+    elif isinstance(module, PatchEmbed):
+        module.reset_parameters()
 
 
 class ContextViTv41(nn.Module):
