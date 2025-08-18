@@ -43,31 +43,6 @@ class Mlp(nn.Module):
 
 # Attention
 
-class Attention(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int = 8,
-        qkv_bias: bool = False,
-        proj_bias: bool = True,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-    ) -> None:
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = attn_drop
-        self.proj = nn.Linear(dim, dim, bias=proj_bias)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: Tensor) -> Tensor:
-        B, N, D = x.shape
-        H, d   = self.num_heads, self.head_dim
-        qkv = self.qkv(x).reshape(B, N, 3, H, d).permute(2, 0, 3, 1, 4)
-        attn_out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # → [B, H, N, D]
-        return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
-
 class ContextAttention(nn.Module):
     def __init__(
         self,
@@ -105,7 +80,7 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         M, K, H, d = self.M, self.K, self.H, self.d
 
-        w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)                   # [B, M]
+        w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)           # [B, M]
         ctx        = F.softmax(self.w_proj(w_m).view(B, K, N), -1) @ x  # [B, K, D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                  # [B, H, K, d]
@@ -163,25 +138,15 @@ class Block(nn.Module):
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        if block_idx == 0:
-            self.attn = Attention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                attn_drop=attn_drop,
-                proj_drop=drop,
-            )
-        else:
-            self.attn = ContextAttention(
-                dim,
-                ckw,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                attn_drop=attn_drop,
-                proj_drop=drop,
-            )
+        self.attn = ContextAttention(
+            dim,
+            ckw,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
         attn_dp = 0 if skip_attn_drop_path else drop_path
         self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
         
