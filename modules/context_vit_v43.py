@@ -92,9 +92,6 @@ class ContextAttention(nn.Module):
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
-        
-        with torch.no_grad():
-            trunc_normal_(self.bank, std=0.02)
             
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
@@ -109,7 +106,7 @@ class ContextAttention(nn.Module):
         M, K, H, d = self.M, self.K, self.H, self.d
 
         w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)                   # [B, M]
-        ctx        = F.softmax(self.w_proj(w_m), -1) @ x      # [B, K, D]
+        ctx        = F.softmax(self.w_proj(w_m).view(B, K, N), -1) @ x  # [B, K, D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                  # [B, H, K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
