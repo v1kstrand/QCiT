@@ -78,7 +78,7 @@ class ContextAttention(nn.Module):
         x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
         """
         B, N, D = x.shape
-        M, K, H, d = self.M, self.K, self.H, self.d
+        K, H, d = self.K, self.H, self.d
 
         w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)           # [B, M]
         ctx        = F.softmax(self.w_proj(w_m).view(B, K, N), -1) @ x  # [B, K, D]
