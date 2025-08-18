@@ -60,7 +60,7 @@ class ContextAttention(nn.Module):
         self.K, self.M = ckw["num_prototypes"], ckw["num_banks"]
 
         self.cls_to_m = nn.Linear(dim, self.M)
-        self.w_proj = nn.Linear(self.M, self.K*ckw["num_tokens"])
+        self.w_proj = nn.Linear(self.M, self.K*ckw["num_tokens"], bias=False)
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim,   bias=proj_bias)
