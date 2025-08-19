@@ -4,6 +4,7 @@
 
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
+import math
 
 
 import torch
@@ -43,11 +44,38 @@ class Mlp(nn.Module):
 
 # Attention
 
+class Attention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        proj_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = attn_drop
+        self.proj = nn.Linear(dim, dim, bias=proj_bias)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x: Tensor) -> Tensor:
+        B, N, D = x.shape
+        H, d   = self.num_heads, self.head_dim
+        qkv = self.qkv(x).reshape(B, N, 3, H, d).permute(2, 0, 3, 1, 4)
+        attn_out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # → [B, H, N, D]
+        return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
+
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
-        ckw: dict,
+        num_prototypes: int,
+        num_banks: int,
+        num_tokens: int,
         num_heads: int = 6,
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
@@ -57,10 +85,10 @@ class ContextAttention(nn.Module):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
-        self.K, self.M = ckw["num_prototypes"], ckw["num_banks"]
+        self.K, self.M = num_prototypes, num_banks
 
         self.cls_to_m = nn.Linear(dim, self.M)
-        self.w_proj = nn.Linear(self.M, self.K*ckw["num_tokens"], bias=False)
+        self.w_proj = nn.Linear(self.M, self.K*num_tokens, bias=False)
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
         self.proj_out = nn.Linear(dim, dim,   bias=proj_bias)
@@ -138,15 +166,18 @@ class Block(nn.Module):
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = ContextAttention(
-            dim,
-            ckw,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            proj_bias=proj_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-        )
+        attn_kw = dict(
+                dim = dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                proj_bias=proj_bias,
+                attn_drop=attn_drop,
+                proj_drop=drop
+                )
+        if block_idx == 0:
+            self.attn = Attention(**attn_kw)
+        else:
+            self.attn = ContextAttention(**attn_kw, **ckw)
         attn_dp = 0 if skip_attn_drop_path else drop_path
         self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
         
@@ -160,8 +191,8 @@ class Block(nn.Module):
         )
         self.residual_add_ffn = ResidualAdd(dim, drop_path, layerscale)
 
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        x_attn, cache = self.attn(self.norm1(x))   # (attn_out, cls_n, idx)
+    def forward(self, x: Tensor):
+        x_attn, cache = self.attn(self.norm1(x))
         x = self.residual_add_attn(x, x_attn)
         x_ffn = self.mlp(self.norm2(x))
         x = self.residual_add_ffn(x, x_ffn)
@@ -240,6 +271,12 @@ class PatchEmbed(nn.Module):
         if not self.flatten_embedding:
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
+    
+    def reset_parameters(self):
+        k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
+        nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
+        if self.proj.bias is not None:
+            nn.init.uniform_(self.proj.bias, -math.sqrt(k), math.sqrt(k))
 
 
 # # Vit
@@ -271,6 +308,8 @@ def init_weights_vit_timm(module: nn.Module):
     elif isinstance(module, nn.LayerNorm):
         nn.init.constant_(module.bias, 0)
         nn.init.constant_(module.weight, 1.0)
+    elif isinstance(module, PatchEmbed):
+        module.reset_parameters()
 
 
 class ContextViTv43(nn.Module):
@@ -373,6 +412,7 @@ class ContextViTv43(nn.Module):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
+        
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
