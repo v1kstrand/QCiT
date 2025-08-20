@@ -81,7 +81,7 @@ class OuterModel(nn.Module):
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
                 
-            if self.aux_loss is not None:
+            if self.aux_scale is not None:
                 print("aux")
                 cache, aux_loss = cache
                 ce += (aux_loss / len(cache)) * self.aux_scale
