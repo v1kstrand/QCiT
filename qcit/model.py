@@ -36,7 +36,7 @@ class InnerModel(nn.Module):
         cache = None
         out = self.model(x)
         if isinstance(out, tuple):
-            out, cache = out
+            out, *cache = out
             
         pred = self.clsf_out(out)
         if self.training and mixup:
@@ -54,6 +54,7 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
+        self.aux_scale = args.models[name].get("aux_loss", None)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
@@ -79,7 +80,12 @@ class OuterModel(nn.Module):
                 torch.cuda.synchronize()
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
-
+                
+            if self.aux_loss is not None:
+                print("aux")
+                cache, aux_loss = cache
+                ce += (aux_loss / len(cache)) * self.aux_scale
+                
             self.backward(ce)
             if hasattr(self.inner.model, "update"):
                 self.inner.model.update(cache, step)

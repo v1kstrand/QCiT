@@ -118,11 +118,10 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        feat       = F.normalize(x[:,0,:], dim=-1).contiguous()
-        weight     = F.normalize(self.cls_to_m.weight, dim=-1).contiguous()
-        z          = F.linear(feat, weight)                 # in [-1,1]
-        p0         = F.softmax((z * self.tau.to(z.dtype)).float(), -1)
-        w_m        = self.sinkhorn_one_step(p0)                                    # [B, M]
+        feat       = F.normalize(x[:,0,:], dim=-1)
+        weight     = F.normalize(self.cls_to_m.weight, dim=-1)
+        z          = F.linear(feat, weight) * self.tau.to(feat.dtype)             # τ ~ 8–14
+        w_m        = F.softmax(z.float(), dim=-1).to(z.dtype)                     # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
@@ -130,7 +129,7 @@ class ContextAttention(nn.Module):
         k, v       = ctx_kv[0], ctx_kv[1]                                         # [B, H, K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)          # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), (w_m.detach(), logs_ctx.detach(), w_ctx.detach()) # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (w_m, logs_ctx.detach(), w_ctx.detach()) # [B, N, D]
         
 
 # Block
@@ -450,20 +449,26 @@ class ContextViTv43(nn.Module):
         batch_idx = torch.arange(x.size(0), device=x.device).unsqueeze(1)  # [B, 1]
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
+    
+    def aux_loss(self, p):
+        u = p.mean(dim=0)                          # [M]
+        return (u * u.clamp_min(1e-12).log()).sum()   # = -H(u)
 
     def forward(self, x):
         x = self.prepare_tokens(x)
+        aux_loss = 0
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
             caches = []
             for blk in self.blocks:
                 x, cache = blk(x)
-                if self.training:
+                if self.training and cache is not None:
+                    aux_loss += self.aux_loss(cache[0])
                     caches.append(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return (out, caches) if self.training else out
+        return (out, caches, aux_loss) if self.training else out
 
 
 # # END
