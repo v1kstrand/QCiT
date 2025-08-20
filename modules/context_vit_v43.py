@@ -434,7 +434,7 @@ class ContextViTv43(nn.Module):
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
         
-    def update(self):
+    def update(self, *args):
         for b in self.blocks:
             if hasattr(b.attn, "update"):
                 b.attn.update()
