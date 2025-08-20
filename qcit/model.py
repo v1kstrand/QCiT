@@ -94,7 +94,7 @@ class OuterModel(nn.Module):
             if step % self.args.freq["plot"] == 0:
                 for plot_fn in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache)
-                    log_fig(fig, f"{self.name}_step:{step}_{plot_fn}", self.args.exp)
+                    log_fig(fig, f"{self.name}_{plot_fn}", self.args.exp)
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
@@ -149,6 +149,5 @@ def get_encoder(args, name):
             layerscale=kw.get("layerscale", None),
             token_drop=kw.get("token_drop", 0),
             n_registers=kw.get("n_registers", 3),
-            return_cls_only=kw.get("return_cls_only", True),
             **kw.get("unique", {})
         )
