@@ -103,7 +103,13 @@ class ContextAttention(nn.Module):
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=p)
-
+    
+    def sinkhorn_one_step(self, p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        q = p.float()
+        col = q.sum(dim=0, keepdim=True).clamp_min(eps).detach()
+        q = q / col                                               
+        q = q / q.sum(dim=1, keepdim=True).clamp_min(eps)
+        return q.to(p.dtype)
             
     def forward(self, x):
         """
@@ -112,11 +118,11 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        feat       = F.normalize(x[:, 0, :], dim=-1)
-        weight     = F.normalize(self.cls_to_m.weight, dim=-1)
-        z          = F.linear(feat, weight) 
-        z_C        = z - z.mean(0, keepdim=True).detach()
-        w_m        = F.softmax(z_C * self.tau.to(feat.dtype), dim=-1)                                       # [B, M]
+        feat       = F.normalize(x[:,0,:], dim=-1).contiguous()
+        weight     = F.normalize(self.cls_to_m.weight, dim=-1).contiguous()
+        z          = F.linear(feat, weight)                 # in [-1,1]
+        p0         = F.softmax((z * self.tau.to(z.dtype)).float(), -1)
+        w_m        = self.sinkhorn_one_step(p0)                                    # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
