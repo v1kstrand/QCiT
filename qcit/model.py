@@ -36,7 +36,7 @@ class InnerModel(nn.Module):
         cache = None
         out = self.model(x)
         if isinstance(out, tuple):
-            out, *cache = out
+            out, cache = out
             
         pred = self.clsf_out(out)
         if self.training and mixup:

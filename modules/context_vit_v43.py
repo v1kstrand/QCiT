@@ -468,7 +468,7 @@ class ContextViTv43(nn.Module):
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return (out, caches, aux_loss) if self.training else out
+        return (out, (caches, aux_loss)) if self.training else out
 
 
 # # END
