@@ -110,7 +110,7 @@ class ContextAttention(nn.Module):
 
         z          = self.cls_to_m(x[:, 0, :])                                    # [B, M]
         w_m        = F.softmax(z - z.mean(dim=0, keepdim=True).detach(), dim=-1)  # [B, M]
-        logs_ctx   = self.w_proj(w_m - w_m.mean(dim=0, keepdim=True).detach()).reshape(B, K, N) # [B,K,N]
+        logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
