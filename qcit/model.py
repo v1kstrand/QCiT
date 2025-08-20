@@ -91,7 +91,7 @@ class OuterModel(nn.Module):
                 else:
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
-            if step % self.args.plot_freq == 0:
+            if step % self.args.freq["plot"] == 0:
                 for plot_fn in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache)
                     log_fig(fig, f"{self.name}_step:{step}_{plot_fn}", self.args.exp)
