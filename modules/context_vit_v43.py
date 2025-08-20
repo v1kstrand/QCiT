@@ -81,7 +81,7 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,  
-        z_scale: float = 0.5
+        z_scale: float = 3
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -113,7 +113,7 @@ class ContextAttention(nn.Module):
 
         z          = self.cls_to_m(x[:, 0, :])                                    # [B, M]
         z_C        = z - z.mean(dim=0, keepdim=True).detach()
-        w_m        = F.softmax(z_C / self.z_scale, dim=-1)  # [B, M]
+        w_m        = F.softmax(z_C * self.z_scale, dim=-1)  # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
