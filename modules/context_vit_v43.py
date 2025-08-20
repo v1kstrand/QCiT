@@ -117,7 +117,7 @@ class ContextAttention(nn.Module):
 
         z          = self.cls_to_m(x[:, 0, :])                                    # [B, M]
         if self.training:
-            z      = z + torch.rand_like(z) * self.tau
+            z      = z + torch.randn_like(z) * self.tau.to(z.dtype)
         w_m        = F.softmax(z, dim=-1)  # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
