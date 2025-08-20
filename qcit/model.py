@@ -54,7 +54,6 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
-        print(name, self.plot_fns)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
