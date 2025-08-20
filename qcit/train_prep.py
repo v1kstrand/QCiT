@@ -127,7 +127,7 @@ def load_model(args):
         schedulers[name] = OptScheduler(opt, args, exp=exp, name=name)
         m.backward.set_optimizer(opt)
         if hasattr(m.inner.model, "init"):
-            m.inner.model.init(name)
+            m.inner.model.init()
 
     checkpoint_path = args.checkpoint_path or (
         args.exp_dir / "model.pth" if (args.exp_dir / "model.pth").is_file() else None
