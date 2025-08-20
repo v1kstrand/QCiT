@@ -107,7 +107,7 @@ class ContextAttention(nn.Module):
     def sinkhorn_one_step(self, p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
         q = p.float()
         col = q.sum(dim=0, keepdim=True).clamp_min(eps).detach()
-        q = q / col                                               
+        q = q / (col ** 0.5)                                               
         q = q / q.sum(dim=1, keepdim=True).clamp_min(eps)
         return q.to(p.dtype)
             
