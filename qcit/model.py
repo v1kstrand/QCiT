@@ -13,7 +13,7 @@ from modules.context_vit_v43 import ContextViTv43
 from .config import NUM_CLASSES
 from .metrics import accuracy
 from .utils import to_min, log_fig
-from .plot import plot_fn_idx, plot_fn_sim
+from . import plot
 
 
 def get_arc(arc):
@@ -53,7 +53,7 @@ class OuterModel(nn.Module):
         self.inner = InnerModel(args, name)
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
-        self.plot_freq = args.models[name].get("plot_freq", float("inf"))
+        self.plot_fns = args.models[name].get("plot", [])
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
@@ -91,11 +91,10 @@ class OuterModel(nn.Module):
                 else:
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
-            if step % self.plot_freq == 0:
-                fig_sim = plot_fn_sim(cache)
-                fig_idx = plot_fn_idx(cache)
-                log_fig(fig_sim, f"{self.name}_step:{step}_sim", self.args.exp)
-                log_fig(fig_idx, f"{self.name}_step:{step}_idx", self.args.exp)
+            if step % self.args.plot_freq == 0:
+                for plot_fn in self.plot_fns:
+                    fig = getattr(plot, plot_fn)(cache)
+                    log_fig(fig, f"{self.name}_step:{step}_{plot_fn}", self.args.exp)
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
