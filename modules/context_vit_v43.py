@@ -109,7 +109,7 @@ class ContextAttention(nn.Module):
         K, H, d = self.K, self.H, self.d
 
         w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)                # [B, M]
-        logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                       # [B,K,N]
+        logs_ctx   = self.w_proj(w_m - w_m.mean(dim=0, keepdim=True).detach()).reshape(B, K, N) # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                             # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                     # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
@@ -415,6 +415,14 @@ class ContextViTv43(nn.Module):
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
         
+    def init(self):
+        for b in self.blocks:
+            if not hasattr(b.attn, "w_proj"):
+                continue
+            w_proj = b.attn.w_proj
+            with torch.no_grad():
+                nn.init.orthogonal_(w_proj.weight) 
+                w_proj.weight.mul_(1e-2)            
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
