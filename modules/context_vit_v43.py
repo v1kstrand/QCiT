@@ -87,7 +87,7 @@ class ContextAttention(nn.Module):
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
         self.K, self.M = num_prototypes, num_banks
 
-        self.cls_to_m = nn.Linear(dim, self.M)
+        self.cls_to_m = nn.Linear(dim, self.M, bias=False)
         self.w_proj = nn.Linear(self.M, self.K*num_tokens, bias=False)
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
