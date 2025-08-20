@@ -2,7 +2,7 @@ import math, numpy as np, torch, matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 
-def plot_fn_idx(caches, M: int = None, block_labels=None, normalize: bool = False,
+def plot_fn_idx(caches, i, M: int = None, block_labels=None, normalize: bool = False,
             compact: bool = False, sort: str = "id"):
     """
     Plot per-block routing assignments.
@@ -15,7 +15,7 @@ def plot_fn_idx(caches, M: int = None, block_labels=None, normalize: bool = Fals
     for c in caches:
         if c is None:
             continue
-        _, idx, _ = c
+        idx = c[i]
         idx_np = idx.detach().to("cpu").view(-1).numpy() if isinstance(idx, torch.Tensor) else np.asarray(idx).reshape(-1)
         idx_list.append(idx_np)
         if idx_np.size: max_m = max(max_m, int(idx_np.max()) + 1)
@@ -77,6 +77,7 @@ def plot_fn_idx(caches, M: int = None, block_labels=None, normalize: bool = Fals
 
 def plot_fn_sim(
     caches,
+    i, 
     k: int = 10,                 # rows to sample per block
     seed: int = 0,               # RNG seed
     ncols: int | None = None,    # heatmaps per row; None → auto
@@ -99,7 +100,7 @@ def plot_fn_sim(
     for c in caches:
         if c is None:
             continue
-        _, _, sim = c
+        sim = c[i]
         sims = sim.detach().float().to("cpu").numpy() if isinstance(sim, torch.Tensor) else np.asarray(sim)
         B, M = sims.shape
         k_b = min(k, B)
@@ -192,6 +193,4 @@ def plot_fn_sim(
         fig.suptitle(title, y=0.995)
     
     return fig
-
-
 
