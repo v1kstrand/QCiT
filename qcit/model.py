@@ -82,7 +82,6 @@ class OuterModel(nn.Module):
                 back_time = time.perf_counter()
                 
             if self.aux_scale is not None:
-                print("aux")
                 cache, aux_loss = cache
                 ce += (aux_loss / len(cache)) * self.aux_scale
                 
