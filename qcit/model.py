@@ -54,7 +54,7 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
-        self.aux_scale = args.models[name].get("aux_loss", None)
+        self.aux_scale = args.models[name].get("aux_scale", None)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
