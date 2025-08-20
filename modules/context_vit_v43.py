@@ -82,7 +82,6 @@ class ContextAttention(nn.Module):
         proj_bias: bool = True,
         proj_drop: float = 0.0,
         tau_val: float = 1,
-        tau_max_steps: int = 0
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -91,10 +90,8 @@ class ContextAttention(nn.Module):
 
         
         self.cls_to_m = nn.Linear(dim, self.M, bias=False)
-        self.register_buffer("tau", torch.tensor(tau_val if tau_max_steps > 0 else 0))
-        self.register_buffer("tau_step", torch.tensor(0))
-        self.tau_max_steps = tau_max_steps
-        self.tau_init = tau_val
+        self.cls_to_m.no_wd = True
+        self.register_buffer("tau", torch.tensor(tau_val))
         self.w_proj = nn.Linear(self.M, self.K*num_tokens, bias=False)
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
@@ -115,11 +112,11 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        z          = self.cls_to_m(x[:, 0, :])                                    # [B, M]
-        if self.training:
-            tau = self.tau.to(z.dtype)
-            z      = (1 - tau) * z + tau * torch.randn_like(z)
-        w_m        = F.softmax(z, dim=-1)  # [B, M]
+        feat       = F.normalize(x[:, 0, :], dim=-1)
+        weight     = F.normalize(self.cls_to_m.weight, dim=-1)
+        z          = F.linear(feat, weight) * self.tau.to(feat.dtype)          # fixed s (try 5–15)
+        z_C        = z - z.mean(0, keepdim=True).detach()
+        w_m        = F.softmax(z_C, dim=-1)  # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
@@ -128,15 +125,6 @@ class ContextAttention(nn.Module):
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)          # [B, N, D]
         return       self.out_drop(self.proj_out(y)), (w_m.detach(), logs_ctx.detach(), w_ctx.detach()) # [B, N, D]
-    
-    @torch.no_grad()
-    def update(self):
-        if self.tau_max_steps:
-            step = int(self.tau_step.item())
-            frac = min(1.0, step / self.tau_max_steps)
-            new_tau = self.tau_init * (1.0 - frac)
-            self.tau.fill_(new_tau)          # stays a tensor buffer
-            self.tau_step.add_(1)
         
 
 # Block
@@ -434,11 +422,6 @@ class ContextViTv43(nn.Module):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
-        
-    def update(self, *args):
-        for b in self.blocks:
-            if hasattr(b.attn, "update"):
-                b.attn.update()
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
