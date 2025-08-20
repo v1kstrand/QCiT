@@ -80,9 +80,9 @@ class ContextAttention(nn.Module):
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_bias: bool = True,
-        proj_drop: float = 0.0,  
-        tau_val: float = 0,
-        tau_max_steps: int = 0
+        proj_drop: float = 0.0,
+        tau_val: float = 1,
+        tau_max_steps: int = 1
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -130,12 +130,11 @@ class ContextAttention(nn.Module):
     
     @torch.no_grad()
     def update(self):
-        if self.tau_max_steps > 0:
-            step = int(self.tau_step.item())
-            frac = min(1.0, step / self.tau_max_steps)
-            new_tau = self.tau_init * (1.0 - frac)
-            self.tau.fill_(new_tau)          # stays a tensor buffer
-            self.tau_step.add_(1)
+        step = int(self.tau_step.item())
+        frac = min(1.0, step / self.tau_max_steps)
+        new_tau = self.tau_init * (1.0 - frac)
+        self.tau.fill_(new_tau)          # stays a tensor buffer
+        self.tau_step.add_(1)
         
 
 # Block
