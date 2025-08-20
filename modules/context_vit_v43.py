@@ -82,7 +82,7 @@ class ContextAttention(nn.Module):
         proj_bias: bool = True,
         proj_drop: float = 0.0,
         tau_val: float = 1,
-        tau_max_steps: int = 1
+        tau_max_steps: int = 0
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -91,8 +91,8 @@ class ContextAttention(nn.Module):
 
         
         self.cls_to_m = nn.Linear(dim, self.M, bias=False)
-        self.register_buffer("tau", torch.tensor(tau_val))
-        self.register_buffer("tau_step", torch.tensor(1))
+        self.register_buffer("tau", torch.tensor(tau_val if tau_max_steps > 0 else 0))
+        self.register_buffer("tau_step", torch.tensor(0))
         self.tau_max_steps = tau_max_steps
         self.tau_init = tau_val
         self.w_proj = nn.Linear(self.M, self.K*num_tokens, bias=False)
@@ -131,11 +131,12 @@ class ContextAttention(nn.Module):
     
     @torch.no_grad()
     def update(self):
-        step = int(self.tau_step.item())
-        frac = min(1.0, step / self.tau_max_steps)
-        new_tau = self.tau_init * (1.0 - frac)
-        self.tau.fill_(new_tau)          # stays a tensor buffer
-        self.tau_step.add_(1)
+        if self.tau_max_steps:
+            step = int(self.tau_step.item())
+            frac = min(1.0, step / self.tau_max_steps)
+            new_tau = self.tau_init * (1.0 - frac)
+            self.tau.fill_(new_tau)          # stays a tensor buffer
+            self.tau_step.add_(1)
         
 
 # Block
