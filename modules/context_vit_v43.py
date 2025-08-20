@@ -108,15 +108,15 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)              # [B, M]
-        logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                     # [B,K,N]
+        w_m        = F.softmax(self.cls_to_m(x[:, 0, :]), -1)                # [B, M]
+        logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                       # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                             # [B,K,N]
-        ctx        = torch.bmm(w_ctx, x)                                       # [B,K,D]
+        ctx        = torch.bmm(w_ctx, x)                                     # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v       = ctx_kv[0], ctx_kv[1]                                  # [B, H, K, d]
+        k, v       = ctx_kv[0], ctx_kv[1]                                    # [B, H, K, d]
         q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
-        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)   # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), None                 # [B, N, D]
+        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)     # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (w_m, logs_ctx, w_ctx) # [B, N, D]
     
 
 # Block
