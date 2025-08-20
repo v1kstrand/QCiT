@@ -114,9 +114,9 @@ class ContextAttention(nn.Module):
 
         feat       = F.normalize(x[:, 0, :], dim=-1)
         weight     = F.normalize(self.cls_to_m.weight, dim=-1)
-        z          = F.linear(feat, weight) * self.tau.to(feat.dtype)
+        z          = F.linear(feat, weight) 
         z_C        = z - z.mean(0, keepdim=True).detach()
-        w_m        = F.softmax(z_C, dim=-1)                                       # [B, M]
+        w_m        = F.softmax(z_C * self.tau.to(feat.dtype), dim=-1)                                       # [B, M]
         logs_ctx   = self.w_proj(w_m).reshape(B, K, N)                            # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
