@@ -105,7 +105,7 @@ class OuterModel(nn.Module):
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
-        if acc1 is not None:
+        if self.training and acc1 is not None:
             pref = "1-Train-Metrics" if self.training else "2-Val-Metrics"
             stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
