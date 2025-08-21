@@ -464,6 +464,7 @@ class ContextViTv43(nn.Module):
                 if self.training and cache is not None:
                     aux_loss += self.aux_loss(cache[0])
                     caches.append(cache)
+        aux_loss = aux_loss / len(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):

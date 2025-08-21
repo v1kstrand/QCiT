@@ -83,7 +83,7 @@ class OuterModel(nn.Module):
                 
             if self.aux_scale is not None:
                 cache, aux_loss = cache
-                ce += (aux_loss / len(cache)) * self.aux_scale
+                ce += aux_loss * self.aux_scale
                 
             self.backward(ce)
             if hasattr(self.inner.model, "update"):
