@@ -85,18 +85,19 @@ class ContextAttention(nn.Module):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
-        self.K, self.M = num_prototypes, num_banks
+        self.K, self.M, self.N = num_prototypes, num_banks, num_tokens
         
-        self.Q_ctx = nn.Linear(dim, num_prototypes * self.d, bias=False)
+        self.proj_x = nn.Linear(dim, dim + self.d, bias=qkv_bias)
+        self.Q_ctx = nn.Parameter(torch.randn(self.K, self.N))
         self.K_ctx = nn.Parameter(torch.randn(self.K, self.M, self.d))
-        self.V_ctx = nn.Parameter(torch.randn(self.K, self.M, num_tokens))
+        self.V_ctx = nn.Parameter(torch.randn(self.K, self.M, self.N))
         
-        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
+        self.proj_ctx = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim,   bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
+        trunc_normal_(self.Q_ctx, std=0.02)
         trunc_normal_(self.K_ctx, std=0.02)
         trunc_normal_(self.V_ctx,  std=1e-4)
             
@@ -111,17 +112,18 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        q = self.Q_ctx(x[:, 0, :]).view(B, K, d)                     # [B,K,d]
-        g = torch.einsum('bhd,hmd->bhm', q, self.K_ctx) / (d ** 0.5)  # [B,K,M]
-        pi = F.softmax(g.float(), dim=-1).to(g.dtype)        # [B,K,M]
+        q, x_ctx = torch.split(self.proj_x(x), (D, d), -1)
+        Q_ctx = F.softmax(self.Q_ctx.float(), dim=-1).to(x.dtype)
+        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, self.K_ctx) / (d ** 0.5)  # [B,K,M]
+        pi = F.softmax(g.float(), dim=-1).to(x.dtype)        # [B,K,M]
 
         # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
         logs_ctx   = torch.einsum('bhm,hmn->bhn', pi, self.V_ctx)      # [B,K,N]
-        w_ctx      = F.softmax(logs_ctx.float(), dim=-1).to(logs_ctx.dtype)                                  # [B,K,N]
+        w_ctx      = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                         # [B, H, K, d]
-        q          = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
+        q          = q.view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)          # [B, N, D]
         return       self.out_drop(self.proj_out(y)), None # [B, N, D]
         
@@ -321,7 +323,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv45(nn.Module):
+class ContextViTv46(nn.Module):
     def __init__(
         self,
         ckw,
