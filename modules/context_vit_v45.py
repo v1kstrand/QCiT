@@ -88,8 +88,8 @@ class ContextAttention(nn.Module):
         self.K, self.M = num_prototypes, num_banks
         
         self.Q_ctx = nn.Linear(dim, num_prototypes * self.d, bias=False)
-        self.K_ctx = nn.Parameter(torch.randn(self.K, self.M, self.d))
-        self.V_ctx = nn.Parameter(torch.randn(self.K, self.M, num_tokens)) 
+        self.K_ctx = nn.Parameter(torch.randn(1, self.K, self.M, self.d))
+        self.V_ctx = nn.Parameter(torch.randn(1, self.K, self.M, num_tokens)) 
         
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
