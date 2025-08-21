@@ -88,8 +88,8 @@ class ContextAttention(nn.Module):
         self.K, self.M = num_prototypes, num_banks
         
         self.Q_ctx = nn.Linear(dim, num_prototypes * self.d, bias=False)
-        self.K_ctx = nn.Parameter(torch.randn(1, self.K, self.M, self.d))
-        self.V_ctx = nn.Parameter(torch.randn(1, self.K, self.M, num_tokens))
+        self.K_ctx = nn.Parameter(torch.randn(self.K, self.M, self.d))
+        self.V_ctx = nn.Parameter(torch.randn(self.K, self.M, num_tokens))
         
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
@@ -111,10 +111,15 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        q_ctx      = self.Q_ctx(x[:,0,:]).view(B, K, 1, d)
-        k_ctx      = self.K_ctx.expand(B, -1, -1, -1)
-        v_ctx      = self.V_ctx.expand(B, -1, -1, -1)
-        logs_ctx   = self.sdpa(q_ctx, k_ctx, v_ctx).squeeze(2)
+        q = self.Q_ctx(x[:, 0, :]).view(B, K, 1, d)     # [B,K,1,d]
+        # g: [B,K,M] = (q · k^T) / sqrt(d)
+        g = torch.einsum('bkld,kmd->bklm', q, self.K_ctx) / (d ** 0.5)  # [B,K,1,M]
+        g = g.squeeze(2)                                             # [B,K,M]
+        pi = F.softmax(g.float(), dim=-1).to(g.dtype)                # [B,K,M]
+
+        # Linear mix of bank token-logits (matches your SDPA semantics)
+        # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
+        logs_ctx = torch.einsum('bkm,kmn->bkn', pi, self.V_ctx)      # [B,K,N]
         w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
