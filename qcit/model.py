@@ -108,6 +108,8 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
+            if self.aux_scale is not None:
+                stats[f"3-Stats/{self.name} Aux Loss"] = aux_loss.item()
 
         for k, v in stats.items():
             cum_stats[k].append(v)
