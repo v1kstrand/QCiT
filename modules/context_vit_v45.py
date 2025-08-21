@@ -89,7 +89,7 @@ class ContextAttention(nn.Module):
         
         self.Q_ctx = nn.Linear(dim, num_prototypes * self.d, bias=False)
         self.K_ctx = nn.Parameter(torch.randn(1, self.K, self.M, self.d))
-        self.V_ctx = nn.Parameter(torch.randn(1, self.K, self.M, num_tokens)) 
+        self.V_ctx = nn.Parameter(torch.randn(1, self.K, self.M, num_tokens))
         
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
@@ -111,9 +111,11 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        Q_ctx      = self.Q_ctx(x[:,0,:]).view(B, K, 1, d)
-        logs_ctx   = F.scaled_dot_product_attention(Q_ctx, self.K_ctx, self.V_ctx)
-        w_ctx      = F.softmax(logs_ctx.squeeze(2), dim=-1)                       # [B,K,N]
+        q_ctx      = self.Q_ctx(x[:,0,:]).view(B, K, 1, d)
+        k_ctx      = self.K_ctx.expand(B, -1, -1, -1)
+        v_ctx      = self.V_ctx.expand(B, -1, -1, -1)
+        logs_ctx   = self.sdpa(q_ctx, k_ctx, v_ctx).squeeze(2)
+        w_ctx      = F.softmax(logs_ctx, dim=-1)                                  # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                         # [B, H, K, d]
