@@ -83,9 +83,11 @@ class OuterModel(nn.Module):
                 
             if self.aux_scale is not None:
                 cache, aux_loss = cache
-                ce += aux_loss * self.aux_scale
+                loss = ce + aux_loss * self.aux_scale
+            else:
+                loss = ce
                 
-            self.backward(ce)
+            self.backward(loss)
             if hasattr(self.inner.model, "update"):
                 self.inner.model.update(cache, step)
 
