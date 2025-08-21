@@ -87,9 +87,9 @@ class ContextAttention(nn.Module):
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
         self.K, self.M = num_prototypes, num_banks
         
-        self.Q_ctx = nn.Linear(dim, num_prototypes * self.d)
-        self.K_ctx = torch.randn(1, self.K, self.M, self.d)
-        self.V_ctx = torch.randn(1, self.K, self.M, num_tokens)
+        self.Q_ctx = nn.Linear(dim, num_prototypes * self.d, bias=False)
+        self.K_ctx = nn.Parameter(torch.randn(self.K, self.M, self.d))
+        self.V_ctx = nn.Parameter(torch.randn(self.K, self.M, num_tokens)) 
         
         self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=proj_bias)
@@ -97,6 +97,8 @@ class ContextAttention(nn.Module):
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
+        trunc_normal_(self.K_ctx, std=0.02)
+        trunc_normal_(self.V_ctx,  std=1e-4)
             
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
@@ -109,8 +111,8 @@ class ContextAttention(nn.Module):
         B, N, D = x.shape
         K, H, d = self.K, self.H, self.d
 
-        Q_ctx      = self.Q_ctx(x[:,0,:])
-        logs_ctx   = F.scaled_dot_product_attention(Q_ctx, self.K_ctx, self.v_ctx)
+        Q_ctx      = self.Q_ctx(x[:,0,:]).view(B, K, 1, d)
+        logs_ctx   = F.scaled_dot_product_attention(Q_ctx, self.K_ctx, self.V_ctx)
         w_ctx      = F.softmax(logs_ctx.squeeze(2), dim=-1)                       # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
@@ -444,20 +446,16 @@ class ContextViTv45(nn.Module):
 
     def forward(self, x):
         x = self.prepare_tokens(x)
-        aux_loss = 0
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
             caches = []
             for blk in self.blocks:
                 x, cache = blk(x)
-                if self.training and cache is not None:
-                    aux_loss += self.aux_loss(cache[0])
-                    caches.append(cache)
-        aux_loss = aux_loss / max(1, len(caches))
+                caches.append(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return (out, (caches, aux_loss)) if self.training else out
+        return (out, caches) if self.training else out
 
 
 # # END
