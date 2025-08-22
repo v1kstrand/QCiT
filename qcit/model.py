@@ -58,6 +58,7 @@ class OuterModel(nn.Module):
         self.save_cache = None 
         if args.models[name].get("save_cache"):
             self.save_cache = args.exp_dir / "cache" / f"{name}.pt"
+            self.save_cache.mkdir(parents=True, exist_ok=True)
         print("DEBUG: save_cache ->", self.save_cache)
 
     def compile_model(self):
