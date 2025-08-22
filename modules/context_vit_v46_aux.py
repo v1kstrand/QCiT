@@ -347,7 +347,6 @@ class ContextViTv46Aux(nn.Module):
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
         self.aux_scale = ckw.pop("aux_scale")
-        
 
         self.patch_embed = embed_layer(
             img_size=img_size,
