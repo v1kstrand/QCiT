@@ -57,7 +57,8 @@ class OuterModel(nn.Module):
         self.aux_scale = args.models[name].get("aux_scale", None)
         self.save_cache = None 
         if args.models[name].get("save_cache"):
-            self.save_cache = args.exp_dir / "cache" / f"name.pt"
+            self.save_cache = args.exp_dir / "cache" / f"{name}.pt"
+        print("DEBUG: save_cache ->", self.save_cache)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
