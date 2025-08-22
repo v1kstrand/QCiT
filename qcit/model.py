@@ -8,8 +8,8 @@ from timm.loss import SoftTargetCrossEntropy
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v37 import ContextViTv37
 from modules.context_vit_v45 import ContextViTv45
-from modules.context_vit_v46 import ContextViTv46
-from modules.context_vit_v46_aux import ContextViTv46Aux
+from modules.context_vit_v47 import ContextViTv47
+from modules.context_vit_v471 import ContextViTv471
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -21,8 +21,8 @@ def get_arc(arc):
     return {"vit" : ViT,
             "citv37" : ContextViTv37,
             "citv45" : ContextViTv45,
-            "citv46" : ContextViTv46,
-            "citv46aux" : ContextViTv46Aux,
+            "citv47" : ContextViTv47,
+            "citv471" : ContextViTv471,
             }[arc]
 
 
@@ -56,7 +56,6 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
-        self.cache_path = None
         if args.models[name].get("save_cache"):
             self.cache_path = args.exp_dir / "model_cache" / name
             self.cache_path.mkdir(parents=True, exist_ok=True)
@@ -107,7 +106,7 @@ class OuterModel(nn.Module):
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)
-                if self.cache_path is not None:
+                if hasattr(self, "cache_path"):
                     torch.save(cache, self.cache_path / "model_cache.pth")
             
         else:
