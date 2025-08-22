@@ -9,6 +9,7 @@ from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v37 import ContextViTv37
 from modules.context_vit_v45 import ContextViTv45
 from modules.context_vit_v46 import ContextViTv46
+from modules.context_vit_v46_aux import ContextViTv46Aux
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -21,6 +22,7 @@ def get_arc(arc):
             "citv37" : ContextViTv37,
             "citv45" : ContextViTv45,
             "citv46" : ContextViTv46,
+            "citv46aux" : ContextViTv46Aux,
             }[arc]
 
 
