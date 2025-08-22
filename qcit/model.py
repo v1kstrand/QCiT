@@ -108,7 +108,7 @@ class OuterModel(nn.Module):
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)
                 if self.cache_path is not None:
-                    torch.save(cache, self.cache_path / f"model_cache.pth")
+                    torch.save(cache, self.cache_path / "model_cache.pth")
             
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
