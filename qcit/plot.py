@@ -245,4 +245,4 @@ def plot_BKN_heatmap(caches, ci, num_samples: int = 20):
         idx += 1
 
     plt.tight_layout()
-    plt.show()
+    return fig
