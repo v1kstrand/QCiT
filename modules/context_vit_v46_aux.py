@@ -73,7 +73,7 @@ class ContextAttention(nn.Module):
         self.out_drop  = nn.Dropout(proj_drop)
         trunc_normal_(self.Q_ctx, std=0.02)
         trunc_normal_(self.K_ctx, std=0.02)
-        trunc_normal_(self.V_ctx,  std=1e-4)
+        trunc_normal_(self.V_ctx,  std=0.02)
             
     def sdpa(self, q, k, v):
         p = self.attn_drop if self.training else 0.0
