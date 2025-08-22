@@ -55,11 +55,11 @@ class OuterModel(nn.Module):
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
         self.aux_scale = args.models[name].get("aux_scale", None)
-        self.save_cache = None 
+        self.cache_path = None 
         if args.models[name].get("save_cache"):
-            self.save_cache = args.exp_dir / "model_cache" / f"{name}.pt"
-            self.save_cache.mkdir(parents=True, exist_ok=True)
-        print("DEBUG: save_cache ->", self.save_cache)
+            self.cache_path = args.exp_dir / "model_cache" / f"{name}.pt"
+            self.cache_path.mkdir(parents=True, exist_ok=True)
+        print("DEBUG: save_cache ->", self.cache_path)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
@@ -107,8 +107,8 @@ class OuterModel(nn.Module):
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)
-                if self.save_cache is not None:
-                    torch.save(cache, self.save_cache)
+                if self.cache_path is not None:
+                    torch.save(cache, self.cache_path)
             
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
