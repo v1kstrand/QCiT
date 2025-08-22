@@ -318,7 +318,6 @@ class ContextViTv46Aux(nn.Module):
         return_cls_only=True,
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
         skip_attn_drop_path = False,
-        aux_scale=0,
     ):
         """
         Args:
@@ -347,7 +346,8 @@ class ContextViTv46Aux(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
-        self.aux_scale = aux_scale
+        self.aux_scale = ckw.pop("aux_scale")
+        
 
         self.patch_embed = embed_layer(
             img_size=img_size,
