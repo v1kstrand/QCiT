@@ -65,7 +65,7 @@ class OuterModel(nn.Module):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
 
     def forward(self, imgs, labels, cum_stats, mixup=False, step=0, profiling=False):
-        stats, time_it = {}, step % self.args.freq["time_it"]
+        stats, time_it, aux_loss = {}, step % self.args.freq["time_it"], None
 
         if profiling:
             self.backward.zero()
@@ -118,7 +118,7 @@ class OuterModel(nn.Module):
             stats[f"{pref}/{self.name} CE "] = ce.item()
             stats[f"{pref}/{self.name} Top-1"] = acc1.item()
             stats[f"{pref}/{self.name} Top-5"] = acc5.item()
-            if self.training and self.aux_scale is not None:
+            if self.training and aux_loss is not None:
                 stats[f"3-Stats/{self.name} Aux Loss"] = aux_loss.item()
 
         for k, v in stats.items():
