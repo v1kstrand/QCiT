@@ -54,6 +54,7 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
+        print(f"INFO: {name} model initiated with plot functions: {self.plot_fns}")
         self.aux_scale = args.models[name].get("aux_scale", None)
 
     def compile_model(self):
