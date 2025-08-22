@@ -88,7 +88,7 @@ class ContextAttention(nn.Module):
 
         q, x_ctx = torch.split(self.proj_x(x), (D, d), -1)
         Q_ctx = F.softmax(self.Q_ctx.float(), dim=-1).to(x.dtype)
-        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, self.K_ctx) # [B,K,M]
+        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, self.K_ctx) / (d ** 0.5) # [B,K,M]
         pi = F.softmax(g.float(), dim=-1).to(x.dtype)        # [B,K,M]
 
         # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
