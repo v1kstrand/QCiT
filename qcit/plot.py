@@ -194,3 +194,55 @@ def plot_fn_sim(
     
     return fig
 
+def plot_BKN_heatmap(caches, ci, num_samples: int = 20):
+    """
+    caches: list of cache-like objects where each supports indexing `cache[ci]`
+            and returns a tensor of shape [B, K, N] with softmax rows along N.
+    ci: index used to select a tensor from each cache.
+    num_samples: Number of distinct batch indices (B) to sample per cache (max 10 by default).
+    seed: Optional random seed for reproducibility. Applied independently per cache.
+    """    
+    k = sum(c is not None for c in caches)
+    fig, axes = plt.subplots(k, 1, figsize=(10, max(3, k * 3)))
+    if k == 0:
+        print("Found no caches to plot.")
+        return
+    if k == 1:
+        axes = [axes]  # ensure iterable
+        
+    idx = 0
+    for cache in caches:
+        if cache is None:
+            continue
+        ax = axes[idx]
+        
+        x = cache[ci]  # [B,K,N]
+        if x.ndim != 3:
+            raise ValueError(f"Expected x to have shape [B,K,N], got {tuple(x.shape)}")
+        B, K, N = x.shape
+
+        num = min(B, num_samples)
+        b_indices = torch.randperm(B)[:num]
+        k_indices = torch.randint(low=0, high=K, size=(num,), device=x.device)
+
+        rows, labels = [], []
+        for i in range(num):
+            b = int(b_indices[i].item())
+            k = int(k_indices[i].item())
+            rows.append(x[b, k].detach().float().cpu().unsqueeze(0))
+            labels.append(f"b={b}, k={k}")
+        heat = torch.cat(rows, dim=0).numpy()  # [num, N]
+
+        im = ax.imshow(heat, aspect="auto", interpolation="nearest")
+        ax.set_xlabel("N (class index)")
+        ax.set_ylabel("Sampled (b, k)")
+        ax.set_yticks(np.arange(num))
+        ax.set_yticklabels(labels)
+        ax.set_title(f"[cache {idx}] Sampled rows: {num}×{N} (B={B}, K={K})")
+
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label("Vals")
+        idx += 1
+
+    plt.tight_layout()
+    plt.show()

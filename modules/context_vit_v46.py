@@ -119,13 +119,13 @@ class ContextAttention(nn.Module):
 
         # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
         logs_ctx   = torch.einsum('bhm,hmn->bhn', pi, self.V_ctx)      # [B,K,N]
-        w_ctx      = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype)                                  # [B,K,N]
+        w_ctx      = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype)   # [B,K,N]
         ctx        = torch.bmm(w_ctx, x)                                          # [B,K,D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                         # [B, H, K, d]
         q          = q.view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)          # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), None # [B, N, D]
+        return       self.out_drop(self.proj_out(y)), (pi, w_ctx) # [B, N, D]
         
 
 # Block
