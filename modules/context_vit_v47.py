@@ -96,8 +96,10 @@ class ContextAttention(nn.Module):
         x_regs, x_patch = x[:, :R, :], x[:, R:, :]
         
         Q_ctx = F.softmax(self.Q_ctx.float(), dim=-1).to(x.dtype)
-        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, self.K_ctx) # [B,K^,M]
+        K_ctx = F.normalize(self.K_ctx, dim=-1)
+        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, K_ctx) # [B,K^,M]
         pi = F.softmax(g.float(), dim=-1).to(x.dtype)        # [B,K^,M]
+        
 
         # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
         logs_ctx   = torch.einsum('bhm,hmn->bhn', pi, self.V_ctx)        # [B,K^,N^]
