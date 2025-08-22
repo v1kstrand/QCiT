@@ -54,7 +54,6 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
-        self.aux_scale = args.models[name].get("aux_scale", None)
         self.cache_path = None
         if args.models[name].get("save_cache"):
             self.cache_path = args.exp_dir / "model_cache" / name
@@ -85,9 +84,9 @@ class OuterModel(nn.Module):
                 stats[f"Time/{self.name} - Forward Pass"] = to_min(start_time)
                 back_time = time.perf_counter()
                 
-            if self.aux_scale is not None:
+            if len(cache) == 2:
                 cache, aux_loss = cache
-                loss = ce + aux_loss * self.aux_scale
+                loss = ce + aux_loss
             else:
                 loss = ce
                 

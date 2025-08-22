@@ -43,32 +43,6 @@ class Mlp(nn.Module):
         return x
 
 # Attention
-
-class Attention(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int = 8,
-        qkv_bias: bool = False,
-        proj_bias: bool = True,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-    ) -> None:
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = attn_drop
-        self.proj = nn.Linear(dim, dim, bias=proj_bias)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: Tensor) -> Tensor:
-        B, N, D = x.shape
-        H, d   = self.num_heads, self.head_dim
-        qkv = self.qkv(x).reshape(B, N, 3, H, d).permute(2, 0, 3, 1, 4)
-        attn_out = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2])  # → [B, H, N, D]
-        return self.proj_drop(self.proj(attn_out.transpose(1, 2).reshape(B, N, D))), None
-
 class ContextAttention(nn.Module):
     def __init__(
         self,
@@ -125,7 +99,7 @@ class ContextAttention(nn.Module):
         k, v       = ctx_kv[0], ctx_kv[1]                                         # [B, H, K, d]
         q          = q.view(B, N, H, d).transpose(1, 2).contiguous() # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)          # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), (pi, w_ctx.detach()) # [B, N, D] - cache
+        return       self.out_drop(self.proj_out(y)), (pi.detach(), w_ctx.detach()) # [B, N, D] - cache
         
 
 # Block
@@ -185,10 +159,7 @@ class Block(nn.Module):
                 attn_drop=attn_drop,
                 proj_drop=drop
                 )
-        if block_idx == 0:
-            self.attn = Attention(**attn_kw)
-        else:
-            self.attn = ContextAttention(**attn_kw, **ckw)
+        self.attn = ContextAttention(**attn_kw, **ckw)
         attn_dp = 0 if skip_attn_drop_path else drop_path
         self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
         
@@ -346,7 +317,8 @@ class ContextViTv46(nn.Module):
         n_registers=0,
         return_cls_only=True,
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
-        skip_attn_drop_path = False
+        skip_attn_drop_path = False,
+        aux_scale=0,
     ):
         """
         Args:
@@ -375,6 +347,7 @@ class ContextViTv46(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
+        self.aux_scale = aux_scale
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -445,19 +418,30 @@ class ContextViTv46(nn.Module):
         batch_idx = torch.arange(x.size(0), device=x.device).unsqueeze(1)  # [B, 1]
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
+    
+    def aux_loss(self, x, gamma=0.06, eps=1e-8):
+        z = x.view(-1, x.size(-1))                        # [B*K, M]
+        zc = z - z.mean(dim=-1, keepdim=True)               # center across m
+        std = zc.std(dim=-1, unbiased=False).clamp_min(eps) # rowwise std
+        return F.relu(gamma - std).mean()
 
     def forward(self, x):
         x = self.prepare_tokens(x)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
-            caches = []
+            aux_loss, caches = [], []
             for blk in self.blocks:
                 x, cache = blk(x)
                 caches.append(cache)
+                if self.training:
+                    aux_loss.append(self.aux_loss(cache[0]))
         
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return (out, caches) if self.training else out
+            
+        if self.training:
+            aux_loss = torch.stack(aux_loss).mean() * self.aux_scale
+        return (out, (caches, aux_loss)) if self.training else out
 
 
 # # END
