@@ -246,3 +246,66 @@ def plot_BKN_heatmap(caches, ci, num_samples: int = 20):
 
     plt.tight_layout()
     return fig
+
+def K_over_B_heatmap(caches, ci, b_index: int | None = None, height_per_10rows: float = 1.0):
+    """
+    For each cache in `caches`, select a single batch index `b` (random if not given),
+    and plot a heatmap of all K rows (in order) for that b: heat = x[b, :, :]  [K, N].
+
+    Args:
+        caches: list where each element supports `cache[ci] -> Tensor[B,K,N]` (rows over N sum to 1).
+        ci:     index used to select a tensor from each cache.
+        b_index: optional fixed batch index to use for all caches; if None, choose a random b per cache.
+        height_per_10rows: vertical figure size per 10 rows of K (scales each subplot).
+    Returns:
+        matplotlib.figure.Figure
+    """
+    valid_caches = [c for c in caches if c is not None]
+    k = len(valid_caches)
+    if k == 0:
+        print("Found no caches to plot.")
+        return
+
+    # compute relative heights for each subplot
+    Ks = []
+    for cache in valid_caches:
+        x = cache[ci]
+        if x.ndim != 3:
+            raise ValueError(f"Expected x to have shape [B,K,N], got {tuple(x.shape)}")
+        Ks.append(x.shape[1])  # K
+    height_ratios = Ks
+
+    total_height = sum(K/20 * height_per_10rows for K in Ks)
+    fig, axes = plt.subplots(
+        k, 1, figsize=(10, total_height),
+        gridspec_kw={"height_ratios": height_ratios}
+    )
+    if k == 1:
+        axes = [axes]
+
+    for idx, (cache, ax, K) in enumerate(zip(valid_caches, axes, Ks)):
+        x = cache[ci]  # [B, K, N]
+        B, K, N = x.shape
+
+        # pick batch index
+        if b_index is None:
+            b = int(torch.randint(low=0, high=B, size=(1,), device=x.device).item())
+        else:
+            if not (0 <= b_index < B):
+                raise ValueError(f"b_index {b_index} out of range [0, {B-1}]")
+            b = int(b_index)
+
+        heat = x[b].detach().float().cpu().numpy()  # [K, N]
+
+        im = ax.imshow(heat, aspect="auto", interpolation="nearest")
+        ax.set_xlabel("N (index)")
+        ax.set_ylabel("k (prototype index)")
+        ax.set_yticks(np.arange(K))
+        ax.set_yticklabels([str(i) for i in range(K)])
+        ax.set_title(f"[cache {idx}] b={b}  •  Heat shape: {K}×{N} (B={B}, K={K})")
+
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label("Value")
+
+    plt.tight_layout()
+    return fig
