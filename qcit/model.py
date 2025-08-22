@@ -54,8 +54,10 @@ class OuterModel(nn.Module):
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
-        print(f"INFO: {name} model initiated with plot functions: {self.plot_fns}")
         self.aux_scale = args.models[name].get("aux_scale", None)
+        self.save_cache = None 
+        if args.models[name].get("save_cache"):
+            self.save_cache = args.exp_dir / "cache" / f"name.pt"
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
@@ -103,6 +105,9 @@ class OuterModel(nn.Module):
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)
+                if self.save_cache is not None:
+                    torch.save(cache, self.save_cache)
+            
         else:
             ce, acc1, acc5, _ = self.inner(imgs, labels)
 
