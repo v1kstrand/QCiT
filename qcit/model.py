@@ -59,7 +59,6 @@ class OuterModel(nn.Module):
         if args.models[name].get("save_cache"):
             self.cache_path = args.exp_dir / "model_cache" / name
             self.cache_path.mkdir(parents=True, exist_ok=True)
-        print("DEBUG: save_cache ->", self.cache_path)
 
     def compile_model(self):
         self.inner.compile(backend="inductor", fullgraph=True, dynamic=False)
