@@ -309,3 +309,106 @@ def K_over_B_heatmap(caches, ci, b_index: int | None = None, height_per_10rows: 
 
     plt.tight_layout()
     return fig
+
+def K_over_B_heatmapV2(
+    caches,
+    ci,
+    b_indices= None,
+    *,
+    height_per_10rows: float = 1.0,
+    share_color_scale_within_row: bool = True,
+) -> plt.Figure:
+    """
+    For each cache in `caches`, pick TWO batch indices and plot the [K,N] heatmaps
+    side-by-side (2 columns). Final figure is k rows (one per cache/block) × 2 cols.
+
+    Args:
+        caches: iterable where each element supports `cache[ci] -> Tensor[B,K,N]`
+                (rows over N sum to 1).
+        ci:     index used to select a tensor from each cache.
+        b_indices:
+            - (b1, b2): use these two batch indices for *all* caches
+            - None: sample two distinct indices per cache
+        height_per_10rows: vertical figure size per 10 rows of K (scales each row).
+        share_color_scale_within_row:
+            If True, both heatmaps in the same row (same cache) share vmin/vmax.
+    Returns:
+        matplotlib.figure.Figure
+    """
+    valid_caches = [c for c in caches if c is not None]
+    k = len(valid_caches)
+    if k == 0:
+        raise ValueError("Found no caches to plot.")
+
+    # collect K per cache for row height ratios
+    Ks = []
+    shapes = []
+    for cache in valid_caches:
+        x = cache[ci]
+        if x.ndim != 3:
+            raise ValueError(f"Expected x to have shape [B,K,N], got {tuple(x.shape)}")
+        shapes.append(tuple(x.shape))
+        Ks.append(x.shape[1])  # K
+
+    # figure sizing
+    total_height = sum(K/20 * height_per_10rows for K in Ks)
+    fig, axes = plt.subplots(
+        k, 2,
+        figsize=(12, total_height),
+        gridspec_kw={"height_ratios": Ks}
+    )
+    axes = np.atleast_2d(axes)  # ensure shape (k, 2)
+
+    for row_idx, (cache, (B, K, N)) in enumerate(zip(valid_caches, shapes)):
+        x = cache[ci]  # [B, K, N]
+
+        # choose two batch indices
+        if b_indices is not None:
+            b1, b2 = map(int, b_indices)
+            if not (0 <= b1 < B and 0 <= b2 < B):
+                raise ValueError(f"b_indices {b_indices} out of range for B={B}")
+            # allow equal b1==b2 if user passes it intentionally
+        else:
+            if B >= 2:
+                # two distinct at random
+                perm = torch.randperm(B, device=x.device)
+                b1, b2 = int(perm[0]), int(perm[1])
+            else:
+                b1 = b2 = 0  # only one option
+
+        heat1 = x[b1].detach().float().cpu().numpy()  # [K, N]
+        heat2 = x[b2].detach().float().cpu().numpy()
+
+        # shared color scale within the row (recommended so colors are comparable)
+        vmin = vmax = None
+        if share_color_scale_within_row:
+            vmin = float(min(np.nanmin(heat1), np.nanmin(heat2)))
+            vmax = float(max(np.nanmax(heat1), np.nanmax(heat2)))
+
+        # left plot
+        axL = axes[row_idx, 0]
+        imL = axL.imshow(heat1, aspect="auto", interpolation="nearest", vmin=vmin, vmax=vmax)
+        axL.set_ylabel("k (prototype index)")
+        axL.set_yticks(np.arange(K))
+        axL.set_yticklabels([str(i) for i in range(K)])
+        axL.set_title(f"[cache {row_idx}] b={b1} • {K}×{N} (B={B})")
+
+        # right plot
+        axR = axes[row_idx, 1]
+        imR = axR.imshow(heat2, aspect="auto", interpolation="nearest", vmin=vmin, vmax=vmax)
+        # align y but hide labels on right to reduce clutter
+        axR.set_yticks(np.arange(K))
+        axR.set_yticklabels([])
+        axR.set_title(f"[cache {row_idx}] b={b2} • {K}×{N} (B={B})")
+
+        # x labels only on bottom row
+        if row_idx == k - 1:
+            axL.set_xlabel("N (index)")
+            axR.set_xlabel("N (index)")
+
+        # one colorbar for the row (covers both subplots)
+        cbar = fig.colorbar(imL, ax=[axL, axR], fraction=0.025, pad=0.01)
+        cbar.set_label("Value")
+
+    #plt.tight_layout()
+    return fig
