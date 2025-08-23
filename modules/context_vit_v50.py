@@ -63,7 +63,7 @@ class ContextAttention(nn.Module):
         self.n_proto = num_prototypes
         
         self.proj_x = nn.Linear(dim, dim + num_prototypes, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
+        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop

@@ -56,7 +56,6 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_bias: bool = True,
         proj_drop: float = 0.0,
-        forw_2: bool = False
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -66,13 +65,12 @@ class ContextAttention(nn.Module):
         self.K = num_prototypes
         self.R = num_regs
         self.N = num_tokens
-        self.forw_2 = forw_2
         
         mask = [1]*self.R + [0]*(self.N - self.R)
         self.register_buffer("mask", torch.tensor(mask, dtype=torch.bool).view(1, self.N, 1))
         
         self.proj_x = nn.Linear(dim, dim + num_prototypes - num_regs, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=proj_bias)
+        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         W = torch.eye(num_tokens)[:num_regs].unsqueeze(0)  # [1, R, N]
