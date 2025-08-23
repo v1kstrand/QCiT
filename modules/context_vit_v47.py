@@ -92,25 +92,28 @@ class ContextAttention(nn.Module):
         # N^ = N - R
         # K^ = K - R
         
-        q, x_ctx = torch.split(self.proj_x(x), (D, d), -1)
+        q, x_ctx        = torch.split(self.proj_x(x), (D, d), -1)
         x_regs, x_patch = x[:, :R, :], x[:, R:, :]
         
-        Q_ctx = F.softmax(self.Q_ctx.float(), dim=-1).to(x.dtype)
-        K_ctx = F.normalize(self.K_ctx, dim=-1)
-        g = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, K_ctx)  / (self.d ** 0.5) # [B,K^,M]
-        pi = F.softmax(g.float(), dim=-1).to(x.dtype)        # [B,K^,M]
-        
+        x_ctx      = F.layer_norm(x_ctx, (d,))
+        Q_ctx      = F.normalize(self.Q_ctx, dim=-1)
+        K_ctx      = F.normalize(self.K_ctx, dim=-1)
+             
+        g          = torch.einsum('bnd,kn,kmd->bkm', x_ctx, Q_ctx, K_ctx) / (self.d ** 0.5) # [B,K^,M]
+        pi         = F.softmax(g.float(), dim=-1).to(x.dtype)        # [B,K^,M]
 
         # ctx_logs[b,k,n] = Σ_m pi[b,k,m] * V_ctx[k,m,n]
-        logs_ctx   = torch.einsum('bhm,hmn->bhn', pi, self.V_ctx)         # [B,K^,N^]
+        logs_ctx   = torch.einsum('bhm,hmn->bhn', pi, self.V_ctx)        # [B,K^,N^]
         w_ctx      = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype)     # [B,K^,N^]
         ctx_patch  = torch.bmm(w_ctx, x_patch)                           # [B,K^,D]
         ctx        = torch.cat([x_regs, ctx_patch], dim=1)               # [B,K,D]
-        ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) 
+        ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v       = ctx_kv[0], ctx_kv[1]                                # [B, H, K, d]
         q          = q.view(B, N, H, d).transpose(1, 2).contiguous()     # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), (pi.detach(), w_ctx.detach()) # [B, N, D] - cache
+        cache      = pi.detach(), w_ctx.detach(), x_ctx.detach()
+        return       self.out_drop(self.proj_out(y)), cache              # [B, N, D] - cache
+        
         
 
 # Block

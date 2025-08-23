@@ -109,7 +109,8 @@ class ContextAttention(nn.Module):
         k, v       = ctx_kv[0], ctx_kv[1]                                # [B, H, K, d]
         q          = q.view(B, N, H, d).transpose(1, 2).contiguous()     # [B,H,N,d]
         y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D) # [B, N, D]
-        return       self.out_drop(self.proj_out(y)), (pi.detach(), w_ctx.detach(), x_ctx.detach()) # [B, N, D] - cache
+        cache      = pi.detach(), w_ctx.detach(), x_ctx.detach()
+        return       self.out_drop(self.proj_out(y)), cache              # [B, N, D] - cache
         
 
 # Block
