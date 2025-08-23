@@ -6,8 +6,6 @@ import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
-from modules.context_vit_v37 import ContextViTv37
-from modules.context_vit_v49 import ContextViTv49
 from modules.context_vit_v50 import ContextViTv50
 from modules.context_vit_v51 import ContextViTv51
 
