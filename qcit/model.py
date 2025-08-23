@@ -17,8 +17,6 @@ from . import plot
 
 def get_arc(arc):
     return {"vit" : ViT,
-            "citv37" : ContextViTv37,
-            "citv49" : ContextViTv49,
             "citv50" : ContextViTv50,
             "citv51" : ContextViTv51,
             }[arc]
