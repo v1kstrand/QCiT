@@ -60,12 +60,12 @@ class ContextAttention(nn.Module):
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.D, self.H, self.d = dim, num_heads, dim // num_heads
         self.K,  self.N = num_prototypes,  num_tokens
-        self.M, self.R = num_tokens - num_regs, num_regs
+        self.R = num_regs
         
-        self.proj_x = nn.Linear(dim, dim + self.M, bias=qkv_bias)
-        mask = [1]*self.R + [0]*self.M
+        self.proj_x = nn.Linear(dim, dim + self.K - self.R, bias=qkv_bias)
+        mask = [1]*self.R + [0]*(self.N - self.R)
         self.register_buffer("mask", torch.tensor(mask, dtype=torch.bool).view(1, self.N, 1))
-        self.V_ctx = nn.Parameter(torch.randn(self.K - self.R, self.N, self.M))
+        self.V_ctx = nn.Parameter(torch.randn(self.K - self.R, self.N, self.N - self.R))
 
         self.proj_ctx = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim,   bias=proj_bias)
@@ -83,23 +83,25 @@ class ContextAttention(nn.Module):
         x: [B, N, D] with token order [CLS, REG_1..REG_R, PATCH_1..PATCH_P]
         """
         B, N, D = x.shape
-        K, H, d, R, M = self.K, self.H, self.d, self.R, self.M
+        K, H, d, R = self.K, self.H, self.d, self.R
+        # N^ = N - R
+        # K^ = K - R
         
-        q, logs_pi      = torch.split(self.proj_x(x), (D, M), -1)         # [B, N, D], [B, N, M]
-        logs_pi         = logs_pi.masked_fill(self.mask, float("-inf")).float()  # [B,N,M]
-        w_pi            = F.softmax(logs_pi, dim=1).to(x.dtype)           # [B,N,M]
-        logs_ctx        = torch.einsum('bnm,knm->bkm', w_pi, self.V_ctx)  # [B,K^,M]
-        w_ctx           = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype) # [B,K^,M]
+        q, logs_pi      = torch.split(self.proj_x(x), (D, K - R), -1)         # [B, N, D], [B, N, K^]
+        logs_pi         = logs_pi.masked_fill(self.mask, float("-inf")).float()  # [B,N,K^]
+        w_pi            = F.softmax(logs_pi, dim=1).to(x.dtype)           # [B,N, K^]
+        logs_ctx        = torch.einsum('bnk,knm->bkm', w_pi, self.V_ctx)  # [B,K^,N^]
+        w_ctx           = F.softmax(logs_ctx.float(), dim=-1).to(x.dtype) # [B,K^,N^]
         
         x_regs, x_patch = x[:, :R, :], x[:, R:, :]
         ctx_patch  = torch.bmm(w_ctx, x_patch)                            # [B,K^,D]
         ctx        = torch.cat([x_regs, ctx_patch], dim=1)                # [B,K, D]
         ctx_kv     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) 
-        k, v       = ctx_kv[0], ctx_kv[1]                                 # [B, H, K, d]
+        k, v       = ctx_kv[0], ctx_kv[1]                                 # [B,H,K,d]
         q          = q.view(B, N, H, d).transpose(1, 2).contiguous()      # [B,H,N,d]
-        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B, N, D]
+        y          = self.sdpa(q, k, v).transpose(1, 2).reshape(B, N, D)  # [B,N,D]
         cache      = w_pi.detach(), w_ctx.detach(), logs_pi.detach()
-        return       self.out_drop(self.proj_out(y)), cache               # [B, N, D] - cache
+        return       self.out_drop(self.proj_out(y)), cache               # [B,N,D] - cache
         
 
 # Block
