@@ -84,25 +84,8 @@ class ContextAttention(nn.Module):
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
-
-    def forward(self, x):
-        if self.forw_2:
-            return self.forward_(x)
-        B, N, D = x.shape 
-        K, H, d, R = self.K, self.H, self.d, self.R
-        # K^ = K - R
-        
-        x_q, logs_ctx   = torch.split(self.proj_x(x), (D, K - R), -1) # 2[B, N, D/K^]
-        logs_ctx        = logs_ctx.masked_fill(self.mask, -float("inf")).float()  # [B,N,K^]
-        w_ctx           = F.softmax(logs_ctx.transpose(1, 2), -1).to(x.dtype) # [B, K^, N]
-        ctx             = torch.cat([x[:, :R, :], torch.bmm(w_ctx, x)  ], dim=1)      # [B, K, D]
-        ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
-        out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache           = w_ctx.detach(),
-        return out, cache
     
-    def forward_(self, x):
+    def forward(self, x):
         B, N, D = x.shape 
         K, H, d, R = self.K, self.H, self.d, self.R
         # K^ = K - R
