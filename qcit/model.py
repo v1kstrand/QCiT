@@ -98,7 +98,7 @@ class OuterModel(nn.Module):
                 else:
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
-            if step % self.args.freq["plot"] == 0:
+            if step % self.args.freq["plot"] == 0 and self.plot_fns:
                 with self.inner.model.return_caches(), torch.no_grad():
                     *_, cache = self.inner(imgs, labels, mixup)
                 for plot_fn, idx, title in self.plot_fns:
