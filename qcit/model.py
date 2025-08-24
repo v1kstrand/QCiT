@@ -48,7 +48,7 @@ class OuterModel(nn.Module):
         super().__init__()
         self.args = args
         self.name = name
-        self.inner = InnerModel(args, name)
+        self.inner_eager = self.inner = InnerModel(args, name)
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
@@ -99,8 +99,9 @@ class OuterModel(nn.Module):
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
             if step % self.args.freq["plot"] == 0:
-                with torch._dynamo.disable(), torch.no_grad():
-                    *_, cache = self.inner(imgs, labels, mixup, return_caches=True)
+                self.backward.zero()
+                with torch.no_grad():
+                    *_, cache = self.inner_eager(imgs, labels, mixup, return_caches=True)
                 
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
