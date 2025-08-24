@@ -101,7 +101,7 @@ class OuterModel(nn.Module):
             if step % self.args.freq["plot"] == 0:
                 self.inner.model.return_caches(True)
                 with torch.no_grad():
-                    *_, cache = self.inner_eager(imgs, labels, mixup)
+                    *_, cache = self.inner(imgs, labels, mixup)
                 self.inner.model.return_caches(False)
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
