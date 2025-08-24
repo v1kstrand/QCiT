@@ -99,10 +99,8 @@ class OuterModel(nn.Module):
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
             if step % self.args.freq["plot"] == 0:
-                self.inner.model.return_caches(True)
-                with torch.no_grad():
+                with self.inner.model.return_caches(), torch.no_grad():
                     *_, cache = self.inner(imgs, labels, mixup)
-                self.inner.model.return_caches(False)
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)

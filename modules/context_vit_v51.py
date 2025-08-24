@@ -5,6 +5,7 @@
 from typing import Tuple, Union, Callable, Optional
 from functools import partial
 import math
+from contextlib import contextmanager
 
 
 import torch
@@ -396,10 +397,18 @@ class ContextViTv51(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
-        
-    def return_caches(self, b=False):
-        for block in self.blocks:
-            block.attn.return_cache = b
+    
+    @contextmanager
+    def return_caches(self):
+        prev = []
+        try:
+            for b in self.blocks:
+                prev.append(b.attn.return_cache)
+                b.attn.return_cache = True
+            yield
+        finally:
+            for b, v in zip(self.blocks, prev):
+                setattr(b.attn, "return_cache", v)
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
