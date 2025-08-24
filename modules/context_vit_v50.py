@@ -57,10 +57,9 @@ class ContextAttention(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
-        self.n_h = num_heads
-        self.h_d = dim // num_heads
-        self.n_proto = num_prototypes
+        self.H = num_heads
+        self.d = dim // num_heads
+        self.K = num_prototypes
         
         self.proj_x = nn.Linear(dim, dim + num_prototypes, bias=qkv_bias)
         self.proj_ctx = nn.Linear(dim, dim  * 2, bias=qkv_bias)
@@ -69,21 +68,28 @@ class ContextAttention(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
+    @torch.no_grad()
+    def attn_score(self, q, k):
+        A = torch.matmul(q.float(), k.float().transpose(-1, -2)) / self.d**0.5
+        P = F.softmax(A, dim=-1).to(q.dtype)
+        return P
+        
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
-    def forward(self, x):
+    def forward(self, x, return_cache=False):
         B, N, D = x.shape 
-        K, H, d = self.n_proto, self.n_h, self.h_d
+        K, H, d = self.K, self.H, self.d
         
         x_q, w_x = torch.split(self.proj_x(x), (D, K), -1) # 2[B, N, D/K]
         w_ctx = F.softmax(w_x.transpose(1, 2).float(), -1).to(x.dtype) 
         ctx =  torch.bmm(w_ctx, x) # [B, K, D]
-        ctx_k, ctx_v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        x_attn = self.sdpa(x_q.view(B, N, H, d).transpose(1, 2).contiguous(), ctx_k, ctx_v) # [B, H, N, d]
+        k, v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
+        q = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
+        x_attn = self.sdpa(q, k, v) # [B, H, N, d]
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache           = w_ctx.detach(),
+        cache    = (ctx.detach(), self.attn_score(q, k)) if return_cache else None
         return out, cache
         
 
@@ -158,8 +164,8 @@ class Block(nn.Module):
         )
         self.residual_add_ffn = ResidualAdd(dim, drop_path, layerscale)
 
-    def forward(self, x: Tensor):
-        x_attn, cache = self.attn(self.norm1(x))
+    def forward(self, x: Tensor, return_cache=False):
+        x_attn, cache = self.attn(self.norm1(x), return_cache=return_cache)
         x = self.residual_add_attn(x, x_attn)
         x_ffn = self.mlp(self.norm2(x))
         x = self.residual_add_ffn(x, x_ffn)
@@ -403,12 +409,12 @@ class ContextViTv50(nn.Module):
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
 
-    def forward(self, x):
+    def forward(self, x, return_caches=False):
         x = self.prepare_tokens(x)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
             caches = []
             for blk in self.blocks:
-                x, cache = blk(x)
+                x, cache = blk(x, return_cache=return_caches)
                 caches.append(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x

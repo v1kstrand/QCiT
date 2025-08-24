@@ -30,9 +30,9 @@ class InnerModel(nn.Module):
         self.criterion = SoftTargetCrossEntropy()
         self.ls = args.kw["label_smoothing"]
 
-    def forward(self, x, labels, mixup=False):
+    def forward(self, x, labels, mixup=False, return_caches=False):
         cache = None
-        out = self.model(x)
+        out = self.model(x, return_caches=return_caches)
         if isinstance(out, tuple):
             out, cache = out
             
@@ -99,6 +99,9 @@ class OuterModel(nn.Module):
                     stats[f"Time/{self.name} - Full Pass"] = to_min(start_time)
                     
             if step % self.args.freq["plot"] == 0:
+                with torch._dynamo.disable(), torch.no_grad():
+                    *_, cache = self.inner(imgs, labels, mixup, return_caches=True)
+                
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
                     log_fig(fig, f"{self.name}_-_{title}", self.args.exp)
