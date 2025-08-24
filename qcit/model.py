@@ -30,9 +30,9 @@ class InnerModel(nn.Module):
         self.criterion = SoftTargetCrossEntropy()
         self.ls = args.kw["label_smoothing"]
 
-    def forward(self, x, labels, mixup=False, return_caches=False):
+    def forward(self, x, labels, mixup=False):
         cache = None
-        out = self.model(x, return_caches=return_caches)
+        out = self.model(x)
         if isinstance(out, tuple):
             out, cache = out
             
@@ -101,7 +101,7 @@ class OuterModel(nn.Module):
             if step % self.args.freq["plot"] == 0:
                 self.inner.model.return_caches(True)
                 with torch.no_grad():
-                    *_, cache = self.inner_eager(imgs, labels, mixup, return_caches=True)
+                    *_, cache = self.inner_eager(imgs, labels, mixup)
                 self.inner.model.return_caches(False)
                 for plot_fn, idx, title in self.plot_fns:
                     fig = getattr(plot, plot_fn)(cache, idx)
