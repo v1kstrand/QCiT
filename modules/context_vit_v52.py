@@ -52,9 +52,10 @@ class ContextAttention(nn.Module):
         num_tokens: int,
         num_heads: int = 6,
         num_regs: int = 1,          # first R tokens are [CLS/REG...]
-        q_bias: bool = False,
+        qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        proj_bias: bool = True
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
@@ -64,41 +65,36 @@ class ContextAttention(nn.Module):
         self.R = num_regs
         self.N = num_tokens
 
-        self.proj_q  = nn.Linear(dim, dim, bias=q_bias)
-        self.proj_kv = nn.Linear(dim, dim * 2, bias=q_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=True)
+        self.proj_q  = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
+        self.return_cache = False
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
-        assert N == self.N, "num_tokens mismatch"
 
-        # queries from all tokens (unchanged)
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2) # [B,H,N,d]
 
-        # pairwise mean pooling over patch tokens (no router)
         patch = x[:, R:, :]                                # [B, P, D], P = N - R
         P = patch.size(1)
         ctx_pair = patch.reshape(B, P // 2, 2, D).mean(dim=2)  # [B, P/2, D]
 
-        # prepend registers back
-        ctx = torch.cat([x[:, :R, :], ctx_pair], dim=1)   # [B, K_eff, D]
-        K_eff = ctx.size(1)
+        ctx = torch.cat([x[:, :R, :], ctx_pair], dim=1)   # [B, K, D]
+        K = ctx.size(1)
 
-        # keys/values from pooled contexts
-        kv = self.proj_kv(ctx).reshape(B, K_eff, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]                                # [B,H,K_eff,d]
+        kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]                                # [B,H,K,d]
 
-        # SDPA (dropout only in training)
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
         )                                                  # [B,H,N,d]
 
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
-        return out
+        return out, None
         
 
 # Block
