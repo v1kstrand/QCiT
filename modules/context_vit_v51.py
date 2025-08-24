@@ -408,7 +408,7 @@ class ContextViTv51(nn.Module):
             yield
         finally:
             for b, v in zip(self.blocks, prev):
-                setattr(b.attn, "return_cache", v)
+                b.attn.return_cache = v
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
