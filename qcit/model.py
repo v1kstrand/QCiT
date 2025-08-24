@@ -48,7 +48,7 @@ class OuterModel(nn.Module):
         super().__init__()
         self.args = args
         self.name = name
-        self.inner_eager = self.inner = InnerModel(args, name)
+        self.inner = InnerModel(args, name)
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
         self.plot_fns = args.models[name].get("plot", [])
