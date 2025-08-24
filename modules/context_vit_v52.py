@@ -50,12 +50,10 @@ class ContextAttention(nn.Module):
         self,
         dim: int,
         num_tokens: int,
-        num_prototypes: int = 128,
         num_heads: int = 6,
-        num_regs: int = 1, #cls + registers
-        qkv_bias: bool = False,
+        num_regs: int = 1,          # first R tokens are [CLS/REG...]
+        q_bias: bool = False,
         attn_drop: float = 0.0,
-        proj_bias: bool = True,
         proj_drop: float = 0.0,
     ):
         super().__init__()
@@ -63,49 +61,44 @@ class ContextAttention(nn.Module):
         self.dim = dim
         self.H = num_heads
         self.d = dim // num_heads
-        self.K = num_prototypes
         self.R = num_regs
         self.N = num_tokens
-        
-        mask = [1]*self.R + [0]*(self.N - self.R)
-        self.register_buffer("mask", torch.tensor(mask, dtype=torch.bool).view(1, self.N, 1))
-        
-        self.proj_x = nn.Linear(dim, dim + num_prototypes - num_regs, bias=qkv_bias)
-        self.proj_ctx = nn.Linear(dim, dim  * 2, bias=qkv_bias)
-        self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
-        W = torch.eye(num_tokens)[:num_regs].unsqueeze(0)  # [1, R, N]
-        self.register_buffer("W", W)
-        
+        self.proj_q  = nn.Linear(dim, dim, bias=q_bias)
+        self.proj_kv = nn.Linear(dim, dim * 2, bias=q_bias)
+        self.proj_out = nn.Linear(dim, dim, bias=True)
+
         self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-        self.return_cache = False
-        
-    @torch.no_grad()
-    def attn_score(self, q, k):
-        A = torch.matmul(q, k.transpose(-1, -2)) / self.d**0.5
-        return F.softmax(A.float(), dim=-1).to(q.dtype)
-        
-    def sdpa(self, q, k, v):
-        dropout_p = self.attn_drop if self.training else 0
-        return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
-    
-    def forward(self, x):
-        B, N, D = x.shape 
-        K, H, d, R = self.K, self.H, self.d, self.R
-        # K^ = K - R
-        
-        x_q, logs_ctx   = torch.split(self.proj_x(x), (D, K - R), -1) # 2[B, N, D\K^]
-        logs_ctx        = logs_ctx.masked_fill(self.mask, -float("inf")).float()  # [B,N,K^]
-        w_ctx_patch     = F.softmax(logs_ctx.transpose(1, 2), -1).to(x.dtype) # [B, K^, N]
-        w_ctx           = torch.cat([self.W.to(x.dtype).expand(B, -1, -1), w_ctx_patch], dim=1)
-        ctx             = torch.bmm(w_ctx, x)      # [B, K, D]
-        k, v     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
-        q        = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
-        x_attn   = self.sdpa(q, k, v) # [B, H, N, d]
-        out      = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache    = (w_ctx_patch.detach(), self.attn_score(q, k)) if self.return_cache else None
-        return out, cache
+        self.out_drop  = nn.Dropout(proj_drop)
+
+    def forward(self, x: torch.Tensor):
+        B, N, D = x.shape
+        H, d, R = self.H, self.d, self.R
+        assert N == self.N, "num_tokens mismatch"
+
+        # queries from all tokens (unchanged)
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2) # [B,H,N,d]
+
+        # pairwise mean pooling over patch tokens (no router)
+        patch = x[:, R:, :]                                # [B, P, D], P = N - R
+        P = patch.size(1)
+        ctx_pair = patch.reshape(B, P // 2, 2, D).mean(dim=2)  # [B, P/2, D]
+
+        # prepend registers back
+        ctx = torch.cat([x[:, :R, :], ctx_pair], dim=1)   # [B, K_eff, D]
+        K_eff = ctx.size(1)
+
+        # keys/values from pooled contexts
+        kv = self.proj_kv(ctx).reshape(B, K_eff, 2, H, d).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]                                # [B,H,K_eff,d]
+
+        # SDPA (dropout only in training)
+        x_attn = F.scaled_dot_product_attention(
+            q, k, v, dropout_p=self.attn_drop if self.training else 0.0
+        )                                                  # [B,H,N,d]
+
+        out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
+        return out
         
 
 # Block
