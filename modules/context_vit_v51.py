@@ -78,6 +78,7 @@ class ContextAttention(nn.Module):
         
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
+        self.return_cache = False
         
     @torch.no_grad()
     def attn_score(self, q, k):
@@ -88,7 +89,7 @@ class ContextAttention(nn.Module):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
     
-    def forward(self, x, return_cache=False):
+    def forward(self, x):
         B, N, D = x.shape 
         K, H, d, R = self.K, self.H, self.d, self.R
         # K^ = K - R
@@ -102,7 +103,7 @@ class ContextAttention(nn.Module):
         q        = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
         x_attn   = self.sdpa(q, k, v) # [B, H, N, d]
         out      = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache    = (ctx.detach(), self.attn_score(q, k)) if return_cache else None
+        cache    = (ctx.detach(), self.attn_score(q, k)) if self.return_cache else None
         return out, cache
         
 
@@ -177,8 +178,8 @@ class Block(nn.Module):
         )
         self.residual_add_ffn = ResidualAdd(dim, drop_path, layerscale)
 
-    def forward(self, x: Tensor, return_cache=False):
-        x_attn, cache = self.attn(self.norm1(x), return_cache=return_cache)
+    def forward(self, x: Tensor):
+        x_attn, cache = self.attn(self.norm1(x))
         x = self.residual_add_attn(x, x_attn)
         x_ffn = self.mlp(self.norm2(x))
         x = self.residual_add_ffn(x, x_ffn)
@@ -395,6 +396,10 @@ class ContextViTv51(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
+        
+    def return_caches(self, b=False):
+        for block in self.blocks:
+            block.attn.return_cache = b
 
     def init_weights(self):
         trunc_normal_(self.tok_pos_emb, std=0.02)
@@ -423,12 +428,12 @@ class ContextViTv51(nn.Module):
         patches = patches[batch_idx, batch_perms]  # [B, num_keep, D]
         return torch.cat([non_patches, patches], dim=1)  # [B,1+num_keep,D]
 
-    def forward(self, x, return_caches=False):
+    def forward(self, x):
         x = self.prepare_tokens(x)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
             caches = []
             for blk in self.blocks:
-                x, cache = blk(x, return_cache=return_caches)
+                x, cache = blk(x)
                 caches.append(cache)
         
         x = x[:, 0, :] if self.return_cls_only else x
