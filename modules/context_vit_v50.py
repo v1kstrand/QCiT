@@ -90,7 +90,7 @@ class ContextAttention(nn.Module):
         q = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
         x_attn = self.sdpa(q, k, v) # [B, H, N, d]
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache    = (ctx.detach(), self.attn_score(q, k)) if self.return_cache else None
+        cache    = (w_ctx.detach(), self.attn_score(q, k)) if self.return_cache else None
         return out, cache
         
 

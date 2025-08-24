@@ -97,14 +97,14 @@ class ContextAttention(nn.Module):
         
         x_q, logs_ctx   = torch.split(self.proj_x(x), (D, K - R), -1) # 2[B, N, D/K^]
         logs_ctx        = logs_ctx.masked_fill(self.mask, -float("inf")).float()  # [B,N,K^]
-        w_ctx           = F.softmax(logs_ctx.transpose(1, 2), -1).to(x.dtype) # [B, K^, N]
-        w_ctx           = torch.cat([self.W.to(x.dtype).expand(B, -1, -1), w_ctx], dim=1)
+        w_ctx_patch           = F.softmax(logs_ctx.transpose(1, 2), -1).to(x.dtype) # [B, K^, N]
+        w_ctx           = torch.cat([self.W.to(x.dtype).expand(B, -1, -1), w_ctx_patch], dim=1)
         ctx             = torch.bmm(w_ctx, x)      # [B, K, D]
         k, v     = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
         q        = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
         x_attn   = self.sdpa(q, k, v) # [B, H, N, d]
         out      = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D))) # [B, N, D]
-        cache    = (ctx.detach(), self.attn_score(q, k)) if self.return_cache else None
+        cache    = (w_ctx_patch.detach(), self.attn_score(q, k)) if self.return_cache else None
         return out, cache
         
 
