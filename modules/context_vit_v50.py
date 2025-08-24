@@ -70,9 +70,8 @@ class ContextAttention(nn.Module):
         
     @torch.no_grad()
     def attn_score(self, q, k):
-        A = torch.matmul(q.float(), k.float().transpose(-1, -2)) / self.d**0.5
-        P = F.softmax(A, dim=-1).to(q.dtype)
-        return P
+        A = torch.matmul(q, k.transpose(-1, -2)) / self.d**0.5
+        return F.softmax(A.float(), dim=-1).to(q.dtype)
         
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0

@@ -79,15 +79,14 @@ class ContextAttention(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         
+    @torch.no_grad()
+    def attn_score(self, q, k):
+        A = torch.matmul(q, k.transpose(-1, -2)) / self.d**0.5
+        return F.softmax(A.float(), dim=-1).to(q.dtype)
+        
     def sdpa(self, q, k, v):
         dropout_p = self.attn_drop if self.training else 0
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
-    
-    @torch.no_grad()
-    def attn_score(self, q, k):
-        A = torch.matmul(q.float(), k.float().transpose(-1, -2)) / self.d**0.5
-        P = F.softmax(A, dim=-1).to(q.dtype)
-        return P
     
     def forward(self, x, return_cache=False):
         B, N, D = x.shape 
