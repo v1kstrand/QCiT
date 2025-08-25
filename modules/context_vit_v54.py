@@ -64,35 +64,59 @@ class ContextAttention(nn.Module):
         self.d = dim // num_heads
         self.R = num_regs
         self.N = num_tokens
+        self.P = num_tokens - num_regs
+        self.S = int(self.P ** 0.5)
 
-        
-        self.proj_q  = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.logit    = nn.Linear(dim, 1, bias=False)  
+        self.logit.no_wd = self.logit.skip_init = True
+        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_kv  = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
         self.out_drop  = nn.Dropout(proj_drop)
         self.return_cache = False
+        nn.init.zeros_(self.logit.weight)
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
+        P, S = self.P, self.S
+        assert N == self.N, "num_tokens mismatch"
 
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2) # [B,H,N,d]
+        # queries from all tokens
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)   # [B,H,N,d]
 
-        patch = x[:, R:, :]                                # [B, P, D], P = N - R
-        P = patch.size(1)
-        ctx_pair = patch.reshape(B, P // 2, 2, D).mean(dim=2)  # [B, P/2, D]
+        # --- 2×2 mean pooling over patch grid ---
 
-        ctx = torch.cat([x[:, :R, :], ctx_pair], dim=1)   # [B, K, D]
+        # [B, H, W, D] -> group 2×2 blocks -> mean over those dims
+        # --- 2×2 softmax-pooled K/V groups ---
+        patch = x[:, R:, :].reshape(B, S, S, D)                         # [B,S,S,D]
+
+        # make explicit 2×2 groups → [B, S/2, S/2, 4, D]
+        g4 = patch.reshape(B, S//2, 2, S//2, 2, D)                      # [B,S/2,2,S/2,2,D]
+        g4 = g4.permute(0, 1, 3, 2, 4, 5).reshape(B, S//2, S//2, 4, D)  # 4 candidates per window
+
+        # logits per element in each 2×2 window, softmax over the 4
+        scores = self.logit(g4.float()).squeeze(-1)                     # [B,S/2,S/2,4]
+        w = F.softmax(scores, dim=-1).unsqueeze(-1).to(g4.dtype)         # [B,S/2,S/2,4,1]
+
+        # weighted pool
+        ctx_2x2  = (w * g4).sum(dim=3)                                   # [B,S/2,S/2,D]
+        ctx_learn = ctx_2x2.reshape(B, (S//2)*(S//2), D)                 # [B,P/4,D]
+
+        # prepend registers back
+        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)               # [B, K, D]
         K = ctx.size(1)
 
+        # keys/values from pooled contexts
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]                                # [B,H,K,d]
+        k, v = kv[0], kv[1]                                            # [B,H,K,d]
 
+        # SDPA
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
-        )                                                  # [B,H,N,d]
+        )                                                               # [B,H,N,d]
 
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
         return out, None
@@ -280,7 +304,8 @@ def named_apply(
 def init_weights_vit_timm(module: nn.Module):
     """ViT weight initialization, original timm impl (for reproducibility)"""
     if isinstance(module, nn.Linear):
-        trunc_normal_(module.weight, std=0.02)
+        if not hasattr(module, "skip_init"):
+            trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.LayerNorm):
@@ -290,7 +315,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv52(nn.Module):
+class ContextViTv54(nn.Module):
     def __init__(
         self,
         ckw,
