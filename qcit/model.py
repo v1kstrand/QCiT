@@ -7,7 +7,7 @@ from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
 from modules.context_vit_v52 import ContextViTv52
-from modules.context_vit_v53 import ContextViTv53
+from modules.context_vit_v54 import ContextViTv54
 
 from .config import NUM_CLASSES
 from .metrics import accuracy
@@ -18,7 +18,7 @@ from . import plot
 def get_arc(arc):
     return {"vit" : ViT,
             "citv52" : ContextViTv52,
-            "citv53" : ContextViTv53,
+            "citv54" : ContextViTv54,
             }[arc]
 
 
