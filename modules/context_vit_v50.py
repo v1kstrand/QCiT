@@ -84,7 +84,7 @@ class ContextAttention(nn.Module):
         K, H, d = self.K, self.H, self.d
         
         x_q, w_x = torch.split(self.proj_x(x), (D, K), -1) # 2[B, N, D/K]
-        w_ctx = F.softmax(w_x.transpose(1, 2).float(), -1).to(x.dtype) 
+        w_ctx = F.softmax(w_x.transpose(1, 2).float(), -1).to(x.dtype)
         ctx =  torch.bmm(w_ctx, x) # [B, K, D]
         k, v = self.proj_ctx(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4) # 2[B, H, K, d]
         q = x_q.view(B, N, H, d).transpose(1, 2).contiguous()
@@ -117,8 +117,8 @@ class ResidualAdd(nn.Module):
 
         keep = 1.0 - self.drop_prob
         shape = (res.shape[0],) + (1,) * (res.ndim - 1)
-        scale = (torch.rand(shape, dtype=res.dtype, device=res.device) < keep)
-        scale = scale.to(res.dtype) / keep
+        scale = torch.empty(shape, device=res.device, dtype=torch.float32).bernoulli_(keep)
+        scale = (scale / keep).to(res.dtype)
         return x + res * (self.gamma * scale)
     
     
@@ -357,8 +357,7 @@ class ContextViTv50(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
-            dpr[-1] = drop_path_rate
-        print(f"INFO: Drop Path Rates: {[round(n, 3) for n in dpr]}")
+        print(f"INFO: Drop Path Rates: {[round(n, 4) for n in dpr]}")
 
         blocks_list = [
             Block(

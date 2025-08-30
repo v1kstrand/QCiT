@@ -146,6 +146,7 @@ def set_torch_config_v2(safe_config: bool = True):
     ind.triton.tiling_prevents_reduction_fusion = False
     ind.triton.persistent_reductions = True
     ind.triton.cooperative_reductions = True
+    ind.triton.codegen_upcast_to_fp32 = True
     #ind.triton.multi_kernel = 1
     #ind.triton.divisible_by_16 = True
     #ind.triton.spill_threshold = 16 if safe_config else 32
