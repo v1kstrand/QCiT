@@ -147,7 +147,6 @@ def load_model(args):
     return {"model" : models, "scheduler" :schedulers}
 
 def prep_training(dict_args, exp):
-    dict_args["kw"] = exp
     globals()[dict_args["kw"]["config"]]()
     reset(0)
     delete_in_parallel(num_threads=WORKERS)
