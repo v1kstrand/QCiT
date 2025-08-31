@@ -15,6 +15,12 @@ from torch import Tensor
 from torch.nn.attention import SDPBackend
 import torch.nn.functional as F
 
+# Helper
+
+def no_wd(m: nn.Module) -> None:
+    m.no_wd = True
+    return m
+
 # FFN
 
 
@@ -145,29 +151,22 @@ class ContextAttentionRoPE(nn.Module):
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
-        self.dim = dim
         self.H = num_heads
         self.d = dim // num_heads
         
-        self.N = num_tokens
-        self.R = num_regs
+        self.N, self.R = num_tokens, num_regs
         self.P = num_tokens - num_regs
         
         self.S = int(self.P**0.5) # grid size (S x S)
-        self.td = tile_dim # tile dim
-        self.ts = ts = tile_dim ** 2 # tile size
-        assert self.P % ts == 0 and self.S % self.td == 0
-        self.T = self.P // ts # number of tiles
-        self.U = tile_comp_size
-        
+        self.td, self.ts, self.U = tile_dim, tile_dim ** 2, tile_comp_size
+        self.T = self.P // self.ts # number of tiles
+        assert self.P % self.ts == 0 and self.S % self.td == 0
+                
         theta_x, theta_y = rope_init_theta(self.d, num_heads)
-        self.theta_x = nn.Parameter(theta_x[None, :, None, :])  # [H,P]
-        self.theta_y = nn.Parameter(theta_y[None, :, None, :])  # [H,P]
-        self.theta_x.no_wd = True  # flag for optimizer
-        self.theta_y.no_wd = True
+        self.theta_x = no_wd(nn.Parameter(theta_x[None, :, None, :]))  # [H,P]
+        self.theta_y = no_wd(nn.Parameter(theta_y[None, :, None, :]))  # [H,P]
 
-        self.logit = nn.Linear(dim, self.U, bias=False)
-        self.logit.no_wd = True
+        self.logit = no_wd(nn.Linear(dim, self.U, bias=False))
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -208,12 +207,10 @@ class ContextAttentionRoPE(nn.Module):
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
         q = self.mixed_rope(q, px, py)
-        
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
         k = self.mixed_rope(k, pxT, pyT)
-
-        # SDPA
+        
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
         )  # [B,H,N,d]
