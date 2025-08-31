@@ -174,7 +174,7 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        self.attn = ContextAttentionRoPE(**attn_kw, **ckw)
+        self.attn = ContextAttention(**attn_kw, **ckw)
         self.residual_add_attn = ResidualAdd(dim, drop_path, layerscale)
 
         self.norm2 = norm_layer(dim)
