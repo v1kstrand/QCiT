@@ -80,44 +80,53 @@ def rope_init_theta(
     theta_y = torch.stack(fy_list, dim=0)  # [H,P]
     return theta_x, theta_y
 
+
 @torch.no_grad()
-def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0, device=None):
+def rope_build_pxpy(size, center=True, num_regs=1, tile_DU=None, device=None):
+    
+    def reg_helper(px, py, num_regs):
+        zeros = torch.zeros(num_regs, device=device, dtype=torch.float32)
+        px = torch.cat([zeros, px], dim=0)
+        py = torch.cat([zeros, py], dim=0)
+        return px, py
+    
     # --- grid dims ---
     H, W = (size, size) if isinstance(size, int) else size
     ys, xs = torch.meshgrid(
-        torch.arange(H),
-        torch.arange(W),
+        torch.arange(H, device=device),
+        torch.arange(W, device=device),
         indexing="ij",
     )
-    px = xs.to(device=device, dtype=torch.float32)
-    py = ys.to(device=device, dtype=torch.float32)
+    px = xs.to(dtype=torch.float32)
+    py = ys.to(dtype=torch.float32)
     if center:
         px = px - (W - 1) / 2
         py = py - (H - 1) / 2
 
-    if tile_dim == 0:
+    if tile_DU is None:
+        # --- flat path ---
         px_flat = px.reshape(-1)
         py_flat = py.reshape(-1)
-        if include_regs > 0:
-            zeros = torch.zeros(include_regs, dtype=torch.float32)
-            shift = 0.0 if center else 1.0
-            px_flat = torch.cat([zeros, px_flat + shift], dim=0)
-            py_flat = torch.cat([zeros, py_flat + shift], dim=0)
-        return px_flat, py_flat
-    
-    # --- tiled path ---
-    td = tile_dim
+        return reg_helper(px_flat, py_flat, num_regs)
+
+    # --- tiled path (return tile centers) ---
+    td, U = tile_DU
+    assert H % td == 0 and W % td == 0, f"Grid {(H,W)} must be divisible by tile_dim={td}"
     # [HB, tr, WB, tc] -> swap -> [HB, WB, tr, tc] -> [T, ts]
     px_tile = (px.view(H // td, td, W // td, td)
                  .transpose(1, 2)
                  .contiguous()
-                 .view(-1, td * td))                  # [T, ts]
+                 .view(-1, td * td))                 # [T, ts]
     py_tile = (py.view(H // td, td, W // td, td)
                  .transpose(1, 2)
                  .contiguous()
-                 .view(-1, td * td))                  # [T, ts]
-
-    return px_tile.mean(dim=-1), py_tile.mean(dim=-1)
+                 .view(-1, td * td))                 # [T, ts]
+    cx = px_tile.mean(dim=-1)                        # [T]
+    cy = py_tile.mean(dim=-1)                        # [T]
+    
+    cx = cx.repeat_interleave(U)  # [T*U]
+    cy = cy.repeat_interleave(U)  # [T*U]
+    return reg_helper(cx, cy, num_regs)
 
 
 class ContextAttentionRoPE(nn.Module):
@@ -198,13 +207,11 @@ class ContextAttentionRoPE(nn.Module):
 
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
-        q_r, q_p = q[:, :, :R, :], q[:, :, R:, :]
-        q = torch.cat([q_r, self.mixed_rope(q_p, px, py)], dim=2)
+        q = self.mixed_rope(q, px, py)
         
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
-        k_r, k_p = k[:, :, :R, :], k[:, :, R:, :]
-        k = torch.cat([k_r, self.mixed_rope(k_p, pxT, pyT)], dim=2)
+        k = self.mixed_rope(k, pxT, pyT)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
@@ -519,12 +526,10 @@ class ContextViTv56(nn.Module):
     
     @torch.no_grad()
     def init(self):
-        S = int(self.patch_embed.n_patches ** 0.5)
+        S, R = int(self.patch_embed.n_patches ** 0.5), self.ckw["num_regs"]
         td, U = self.ckw["tile_dim"], self.ckw["tile_comp_size"]
-        px, py = rope_build_pxpy(S, device=self.tok_regs.device)
-        pxT, pyT = rope_build_pxpy(S, tile_dim=td, device=self.tok_regs.device)
-        pxT = pxT.repeat_interleave(U)  # [T*U]
-        pyT = pyT.repeat_interleave(U)  # [T*U]
+        px, py = rope_build_pxpy(S, num_regs=R, device=self.tok_regs.device)
+        pxT, pyT = rope_build_pxpy(S, tile_DU=(td, U), num_regs=R, device=self.tok_regs.device)
 
         self.register_buffer("px", px[None, None, :, None])  # [P]
         self.register_buffer("py", py[None, None, :, None])  # [P]
