@@ -112,7 +112,6 @@ def load_model(args):
     schedulers = {}
     for name in args.models:
         models[name] = m = OuterModel(args, name).cuda()
-        m.ema_sd = set_ema_sd(m)
 
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         for k, v in args.opt["default"].items():
@@ -128,6 +127,7 @@ def load_model(args):
         m.backward.set_optimizer(opt)
         if hasattr(m.inner.model, "init"):
             m.inner.model.init()
+        m.ema_sd = set_ema_sd(m)
 
     checkpoint_path = args.checkpoint_path or (
         args.exp_dir / "model.pth" if (args.exp_dir / "model.pth").is_file() else None
