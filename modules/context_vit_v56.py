@@ -176,9 +176,8 @@ class ContextAttentionRoPE(nn.Module):
             cos = cos.to(out_dtype); sin = sin.to(out_dtype)
         return cos, sin  # pair-space
 
-    def mixed_rope(self, x, get_q=True):
+    def mixed_rope(self, x, px, py):
         B,H,Np,D = x.shape
-        px, py = (self.px, self.py) if get_q else (self.pxT, self.pyT)
         cos, sin = self.cis_from(px, py, out_dtype=x.dtype)       # [1,H,Np,D/2]
         qp = x.reshape(B, H, Np, D // 2, 2)
         e, o = qp[..., 0], qp[..., 1]                  # [B,H,Np,D/2]
@@ -186,10 +185,12 @@ class ContextAttentionRoPE(nn.Module):
         oΘ = e * sin + o * cos
         return torch.stack((eΘ, oΘ), dim=-1).reshape_as(x)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, pxy):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
         U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
+        
+        px, py, pxT, pyT = pxy
 
         patch = x[:, R:, :]  # [B,P,D]
         patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
@@ -207,12 +208,12 @@ class ContextAttentionRoPE(nn.Module):
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
         q_r, q_p = q[:, :, :R, :], q[:, :, R:, :]
-        q = torch.cat([q_r, self.mixed_rope(q_p)], dim=2)
+        q = torch.cat([q_r, self.mixed_rope(q_p, px, py)], dim=2)
         
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
         k_r, k_p = k[:, :, :R, :], k[:, :, R:, :]
-        k = torch.cat([k_r, self.mixed_rope(k_p, get_q=False)], dim=2)
+        k = torch.cat([k_r, self.mixed_rope(k_p, pxT, pyT)], dim=2)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
@@ -290,8 +291,8 @@ class Block(nn.Module):
         )
         self.residual_add_ffn = ResidualAdd(dim, drop_path, layerscale)
 
-    def forward(self, x: Tensor):
-        x_attn, cache = self.attn(self.norm1(x))
+    def forward(self, x: Tensor, pxy):
+        x_attn, cache = self.attn(self.norm1(x), pxy)
         x = self.residual_add_attn(x, x_attn)
         x_ffn = self.mlp(self.norm2(x))
         x = self.residual_add_ffn(x, x_ffn)
@@ -537,12 +538,6 @@ class ContextViTv56(nn.Module):
         self.register_buffer("py", py[None, None, :, None])  # [P]
         self.register_buffer("pxT", pxT[None, None, :, None])  # [T, ts]
         self.register_buffer("pyT", pyT[None, None, :, None])  # [T, ts]
-        
-        for blk in self.blocks:
-            blk.attn.px = self.px
-            blk.attn.py = self.py
-            blk.attn.pxT = self.pxT
-            blk.attn.pyT = self.pyT
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
@@ -568,10 +563,11 @@ class ContextViTv56(nn.Module):
 
     def forward(self, x):
         x = self.prepare_tokens(x)
+        pxy = (self.px, self.py, self.pxT, self.pyT)
         with torch.nn.attention.sdpa_kernel(self.sdp_kernel):
             caches = []
             for blk in self.blocks:
-                x, cache = blk(x)
+                x, cache = blk(x, pxy)
                 caches.append(cache)
 
         x = x[:, 0, :] if self.return_cls_only else x
