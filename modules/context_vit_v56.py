@@ -171,8 +171,8 @@ class ContextAttentionRoPE(nn.Module):
         tx, ty = self.theta_x, self.theta_y # [1,H,1,pairs]
         with torch.amp.autocast(device_type=tx.device.type, enabled=False):
             ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty  # [1,H,Npos,pairs]
-            cos, sin = torch.sincos(ang).to(out_dtype)
-        return cos, sin  # pair-space
+            cos, sin = ang.cos(), ang.sin()
+        return cos.to(out_dtype), sin.to(out_dtype)
 
     def mixed_rope(self, x, px, py):
         B,H,Np,D = x.shape
