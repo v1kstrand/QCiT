@@ -81,7 +81,7 @@ def rope_init_theta(
     return theta_x, theta_y
 
 @torch.no_grad()
-def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0):
+def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0, device=None):
     # --- grid dims ---
     H, W = (size, size) if isinstance(size, int) else size
     ys, xs = torch.meshgrid(
@@ -89,8 +89,8 @@ def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0):
         torch.arange(W),
         indexing="ij",
     )
-    px = xs.to(torch.float32)
-    py = ys.to(torch.float32)
+    px = xs.to(device=device, dtype=torch.float32)
+    py = ys.to(device=device, dtype=torch.float32)
     if center:
         px = px - (W - 1) / 2
         py = py - (H - 1) / 2
@@ -528,8 +528,8 @@ class ContextViTv56(nn.Module):
     def init(self):
         S = int(self.patch_embed.n_patches ** 0.5)
         td, U = self.ckw["tile_dim"], self.ckw["tile_comp_size"]
-        px, py = rope_build_pxpy(S)
-        pxT, pyT = rope_build_pxpy(S, tile_dim=td)
+        px, py = rope_build_pxpy(S, device=self.tok_regs.device)
+        pxT, pyT = rope_build_pxpy(S, tile_dim=td, device=self.tok_regs.device)
         pxT = pxT.repeat_interleave(U)  # [T*U]
         pyT = pyT.repeat_interleave(U)  # [T*U]
 
@@ -543,7 +543,6 @@ class ContextViTv56(nn.Module):
             blk.attn.py = self.py
             blk.attn.pxT = self.pxT
             blk.attn.pyT = self.pyT
-        self = self.cuda()
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
