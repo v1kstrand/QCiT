@@ -293,11 +293,13 @@ class ContextAttentionRoPE(nn.Module):
 
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
-        q[:, :, R:, :] = self.mixed_rope(q[:, :, R:, :])
+        q_r, q_p = q[:, :, :R, :], q[:, :, R:, :]
+        q = torch.cat([q_p, self.mixed_rope(q_r), ], dim=2)
         
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
-        k[:, :, R:, :] = self.mixed_rope_tiled(k[:, :, R:, :], w)
+        k_r, k_p = k[:, :, :R, :], k[:, :, R:, :]
+        k = torch.cat([k_p, self.mixed_rope(k_r), ], dim=2)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
