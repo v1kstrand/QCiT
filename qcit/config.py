@@ -38,7 +38,7 @@ if "A100" in torch.cuda.get_device_name():
 else:
     assert False, "WARNING: A100 not found"
 
-def set_torch_config():
+def torch_config_v1():
     torch.set_float32_matmul_precision("medium")
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -108,7 +108,7 @@ def set_torch_config():
     inductor_config.cuda.cutlass_op_denylist_regex = "pingpong"  # filter unstable kernels
     print("INFO: Torch Config Set ✔✔")
     
-def set_torch_config_v2(safe_config: bool = True):
+def torch_config_v2(safe_config: bool = True):
 
     # ----- Math mode / cuDNN -----
     torch.set_float32_matmul_precision("high" if safe_config else "medium")

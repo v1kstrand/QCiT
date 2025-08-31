@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 # FFN
 
+
 class Mlp(nn.Module):
     def __init__(
         self,
@@ -43,7 +44,7 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-# Attention
+
 
 class ContextAttention(nn.Module):
     def __init__(
@@ -51,81 +52,100 @@ class ContextAttention(nn.Module):
         dim: int,
         num_tokens: int,
         num_heads: int = 6,
-        num_regs: int = 1,          # first R tokens are [CLS/REG...]
+        num_regs: int = 1,  # first R tokens are [CLS/REG...]
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        proj_bias: bool = True
+        proj_bias: bool = True,
+        tile_comp_size: int = 1,
+        tile_dim = 1,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.H = num_heads
         self.d = dim // num_heads
-        self.R = num_regs
-        self.N = num_tokens
-
         
-        self.proj_q  = nn.Linear(dim, dim, bias=qkv_bias)
+        self.N = num_tokens
+        self.R = num_regs
+        self.P = num_tokens - num_regs
+        
+        self.S = int(self.P**0.5) # grid size (S x S)
+        self.td = tile_dim # tile dim
+        self.ts = ts = tile_dim ** 2 # tile size
+        assert self.P % ts == 0 and self.S % self.td == 0
+        self.T = self.P // ts # number of tiles
+        self.U = tile_comp_size 
+
+        self.logit = nn.Linear(dim, self.U, bias=False)
+        self.logit.no_wd = True # respected by optimizer
+        self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
-        self.out_drop  = nn.Dropout(proj_drop)
+        self.out_drop = nn.Dropout(proj_drop)
         self.return_cache = False
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
+        U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
 
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2) # [B,H,N,d]
+        patch = x[:, R:, :]  # [B,P,D]
+        patch = patch.reshape(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
+        tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
-        patch = x[:, R:, :]                                # [B, P, D], P = N - R
-        P = patch.size(1)
-        ctx_pair = patch.reshape(B, P // 2, 2, D).mean(dim=2)  # [B, P/2, D]
+        scores = self.logit(tiled)  # [B, T, ts, U]
+        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
+        out = torch.matmul(w, tiled)  # [B, T, U, D] 
+        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
 
-        ctx = torch.cat([x[:, :R, :], ctx_pair], dim=1)   # [B, K, D]
+        # prepend registers back
+        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
         K = ctx.size(1)
 
+        # keys/values from pooled contexts
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
+        
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]                                # [B,H,K,d]
+        k, v = kv[0], kv[1]  # [B,H,K,d]
 
+        # SDPA
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
-        )                                                  # [B,H,N,d]
+        )  # [B,H,N,d]
 
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
         return out, None
-        
-
+    
 # Block
 class ResidualAdd(nn.Module):
     """
     y = x + res * (gamma * scale)
     where scale is per-sample DropPath factor in {0, 1/keep}.
     """
+
     def __init__(self, dim: int, drop_prob: float = 0.0, ls_init: float = None):
         super().__init__()
-        self.drop_prob = float(drop_prob) 
-        self.gamma = nn.Parameter(torch.full((dim,), ls_init)) if ls_init is not None else None
-        if ls_init is not None:
-            self.gamma.no_wd = True
-        assert drop_prob == 0 or ls_init is not None
-            
+        self.drop_prob = float(drop_prob)
+        self.gamma = (
+            nn.Parameter(torch.full((dim,), ls_init)) if ls_init is not None else 1
+        )
+
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
-        if self.gamma is None:
-            return x + res
-        
         if not self.training or self.drop_prob == 0.0:
             return x + res * self.gamma
 
         keep = 1.0 - self.drop_prob
         shape = (res.shape[0],) + (1,) * (res.ndim - 1)
-        scale = (torch.rand(shape, dtype=res.dtype, device=res.device) < keep)
+        scale = torch.empty(shape, device=res.device, dtype=torch.float32).bernoulli_(
+            keep
+        )
         scale = scale.to(res.dtype) / keep
         return x + res * (self.gamma * scale)
-    
-    
+
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -142,23 +162,21 @@ class Block(nn.Module):
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
-        skip_attn_drop_path=False,
-        block_idx=-1
+        block_idx=-1,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
         attn_kw = dict(
-                dim = dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                attn_drop=attn_drop,
-                proj_drop=drop
-                )
-        self.attn = ContextAttention(**attn_kw, **ckw)
-        attn_dp = 0 if skip_attn_drop_path else drop_path
-        self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
-        
+            dim=dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
+        self.attn = ContextAttentionRoPE(**attn_kw, **ckw)
+        self.residual_add_attn = ResidualAdd(dim, drop_path, layerscale)
+
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(
             in_features=dim,
@@ -249,7 +267,7 @@ class PatchEmbed(nn.Module):
         if not self.flatten_embedding:
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
-    
+
     def reset_parameters(self):
         k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
         nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
@@ -280,7 +298,8 @@ def named_apply(
 def init_weights_vit_timm(module: nn.Module):
     """ViT weight initialization, original timm impl (for reproducibility)"""
     if isinstance(module, nn.Linear):
-        trunc_normal_(module.weight, std=0.02)
+        if not hasattr(module, "skip_init"):
+            trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.LayerNorm):
@@ -290,7 +309,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv52(nn.Module):
+class ContextViTv56(nn.Module):
     def __init__(
         self,
         ckw,
@@ -313,7 +332,6 @@ class ContextViTv52(nn.Module):
         n_registers=0,
         return_cls_only=True,
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
-        skip_attn_drop_path = False
     ):
         """
         Args:
@@ -362,8 +380,7 @@ class ContextViTv52(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
-            dpr[-1] = drop_path_rate
-        print(f"INFO: Drop Path Rates: {[round(n, 3) for n in dpr]}")
+        print(f"INFO: Drop Path Rates: {[round(n, 4) for n in dpr]}")
 
         blocks_list = [
             Block(
@@ -379,7 +396,6 @@ class ContextViTv52(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 block_idx=i,
-                skip_attn_drop_path=skip_attn_drop_path
             )
             for i in range(depth)
         ]
@@ -387,7 +403,12 @@ class ContextViTv52(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
-    
+        
+    def init_weights(self):
+        trunc_normal_(self.tok_pos_emb, std=0.02)
+        nn.init.normal_(self.tok_regs, std=1e-6)
+        named_apply(init_weights_vit_timm, self)
+        
     @contextmanager
     def return_caches(self):
         prev = []
@@ -400,11 +421,6 @@ class ContextViTv52(nn.Module):
             for b, v in zip(self.blocks, prev):
                 b.attn.return_cache = v
 
-    def init_weights(self):
-        trunc_normal_(self.tok_pos_emb, std=0.02)
-        nn.init.normal_(self.tok_regs, std=1e-6)
-        named_apply(init_weights_vit_timm, self)
-
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
@@ -414,11 +430,11 @@ class ContextViTv52(nn.Module):
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
-                
+
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
-        patch_idx = 1 + self.n_registers 
+        patch_idx = 1 + self.n_registers
         non_patches, patches = x[:, :patch_idx, :], x[:, patch_idx:, :]
         num_keep = int((1 - self.p_token_drop) * self.n_patches)
         r = torch.rand(x.size(0), self.n_patches, device=x.device)
@@ -434,7 +450,7 @@ class ContextViTv52(nn.Module):
             for blk in self.blocks:
                 x, cache = blk(x)
                 caches.append(cache)
-        
+
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)

@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 # FFN
 
+
 class Mlp(nn.Module):
     def __init__(
         self,
@@ -43,72 +44,268 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-# Attention
 
-class ContextAttention(nn.Module):
+@torch.no_grad()
+def rope_build_pxpy(
+    H_grid,
+    W_grid,
+    include_regs: int = 0,
+    center: bool = False,
+    dtype=torch.float32,
+):
+    ys, xs = torch.meshgrid(
+        torch.arange(H_grid),
+        torch.arange(W_grid),
+        indexing="ij",
+    )
+    px = xs.flatten().to(dtype)
+    py = ys.flatten().to(dtype)
+
+    if center:
+        px -= (W_grid - 1) / 2
+        py -= (H_grid - 1) / 2
+
+    if include_regs > 0:
+        zeros = torch.zeros(include_regs, dtype=dtype)
+        shift = 0.0 if center else 1.0
+        px = torch.cat([zeros, px + shift])
+        py = torch.cat([zeros, py + shift])
+
+    return px, py
+
+
+@torch.no_grad()
+def rope_init_mixed_2d(
+    dim: int,
+    num_heads: int,
+    base: float = 100.0,  # geometric ladder base
+    rotate_heads: bool = True,
+    eps=0.1,
+):
+    """
+    Returns:
+      theta_x, theta_y: [H, P] (P = dim//2)
+      gate (or None):   nn.Parameter [H,1,1] multiplying the angle Θ inside RoPE
+    """
+    assert dim % 4 == 0, "uses banded init (requires head_dim % 4 == 0)"
+    H, P, bands = num_heads, dim // 2, dim // 4
+
+    # geometric magnitudes per band, then duplicate to cover two pairs per band
+    mag_band = base ** (-torch.arange(bands, dtype=torch.float32) / bands)  # [bands]
+    mag = eps * torch.repeat_interleave(mag_band, 2)  # [P]
+
+    fx_list, fy_list = [], []
+    for _ in range(H):
+        a = torch.rand(1) * 2 * math.pi if rotate_heads else torch.zeros(1)
+        # per band: angle a and its orthogonal companion a+pi/2
+        phi = torch.stack(
+            (a.expand(bands), (a + math.pi / 2).expand(bands)), dim=1
+        ).reshape(-1)
+        fx_list.append(mag * torch.cos(phi))
+        fy_list.append(mag * torch.sin(phi))
+
+    theta_x = torch.stack(fx_list, dim=0)  # [H,P]
+    theta_y = torch.stack(fy_list, dim=0)  # [H,P]
+    return theta_x, theta_y
+
+
+@torch.no_grad()
+def build_pxpy_tiled(S: int, td: int, *, center: bool = True,
+                    dtype=torch.float32):
+    """
+    Returns:
+      px_tile, py_tile: [T, ts] where T = (S/td)^2 and ts = td^2,
+      ordered exactly like:
+        x[:, R:, :].view(B, S//td, td, S//td, td, D)
+                    .transpose(2, 3)   # swap tile-rows with block-cols
+                    .contiguous()
+                    .view(B, T, ts, D)
+    """
+    assert S % td == 0
+    ys, xs = torch.meshgrid(
+        torch.arange(S),
+        torch.arange(S),
+        indexing="ij",
+    )
+    px = xs.to(dtype)
+    py = ys.to(dtype)
+    if center:
+        px -= (S - 1) / 2
+        py -= (S - 1) / 2
+
+    # match tiling order: [HB, tr, WB, tc] -> swap -> [HB, WB, tr, tc] -> [T, ts]
+    px_tile = (px.view(S // td, td, S // td, td)
+                 .transpose(1, 2)
+                 .contiguous()
+                 .view(-1, td * td))                # [T, ts]
+    py_tile = (py.view(S // td, td, S // td, td)
+                 .transpose(1, 2)
+                 .contiguous()
+                 .view(-1, td * td))                # [T, ts]
+    return px_tile, py_tile
+
+
+class ContextAttentionRoPE(nn.Module):
     def __init__(
         self,
         dim: int,
         num_tokens: int,
         num_heads: int = 6,
-        num_regs: int = 1,          # first R tokens are [CLS/REG...]
+        num_regs: int = 1,  # first R tokens are [CLS/REG...]
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        proj_bias: bool = True
+        proj_bias: bool = True,
+        tile_comp_size: int = 1,
+        tile_dim = 1,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.H = num_heads
         self.d = dim // num_heads
-        self.R = num_regs
+        
         self.N = num_tokens
+        self.R = num_regs
         self.P = num_tokens - num_regs
-        self.S = int(self.P ** 0.5)
+        
+        self.S = int(self.P**0.5) # grid size (S x S)
+        self.td = tile_dim # tile dim
+        self.ts = ts = tile_dim ** 2 # tile size
+        assert self.P % ts == 0 and self.S % self.td == 0
+        self.T = self.P // ts # number of tiles
+        self.U = tile_comp_size 
+        
+        px, py = rope_build_pxpy(self.S, self.S, 0, center=True)
+        pxT, pyT = build_pxpy_tiled(self.S, self.td, center=True)
+        
+        self.register_buffer("px", px)  # [P]
+        self.register_buffer("py", py)  # [P]
+        self.register_buffer("pxT", pxT)  # [T, ts]
+        self.register_buffer("pyT", pyT)  # [T, ts]
+        
+        theta_x, theta_y = rope_init_mixed_2d(self.d, num_heads)
+        self.theta_x = nn.Parameter(theta_x)  # [H,P]
+        self.theta_y = nn.Parameter(theta_y)  # [H,P]
+        self.theta_x.no_wd = True  # flag for optimizer
+        self.theta_y.no_wd = True
 
-        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_kv  = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.logit = nn.Linear(dim, self.U, bias=False)
+        self.logit.no_wd = True 
+        self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
-        self.out_drop  = nn.Dropout(proj_drop)
+        self.out_drop = nn.Dropout(proj_drop)
         self.return_cache = False
+        
+    def cis(self, out_dtype=None, trig_dtype=torch.float32):
+        """
+        Mixed 2D RoPE for Q
+        Returns cos,sin: [1, H, N, D]
+        """
+        # px_q, py_q: [N]; theta_x/y: [H,P]; D=2P
+        px = self.px[None, None, :, None]         # [1,1,N,1]
+        py = self.py[None, None, :, None]         # [1,1,N,1]
+        tx = self.theta_x[None, :, None, :]         # [1,H,1,P]
+        ty = self.theta_y[None, :, None, :]         # [1,H,1,P]
+
+        with torch.amp.autocast(device_type=px.device.type, enabled=False):
+            ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty   # [1,H,N,P]
+            cos = torch.repeat_interleave(ang.cos(), 2, dim=-1)     # [1,H,N,D]
+            sin = torch.repeat_interleave(ang.sin(), 2, dim=-1)
+
+        if out_dtype is not None:
+            cos = cos.to(out_dtype)
+            sin = sin.to(out_dtype)
+        return cos, sin
+    
+    def cis_tiled(self, w: torch.Tensor, *, out_dtype=None, detach_w: bool = True):
+        """
+        Mixed 2D RoPE for **compressed K** using tile-phase coherent averaging.
+        Inputs:
+        w: [B, T, U, ts]  (softmax over ts)
+        Returns:
+        cos_k, sin_k: [B, H, T, U, D]  (for the compressed part only; skip regs outside)
+        """
+        ang = (self.theta_x[:, None, None, :] * self.pxT[None, :, :, None] +
+            self.theta_y[:, None, None, :] * self.pyT[None, :, :, None])
+
+        with torch.amp.autocast(device_type=ang.device.type, enabled=False):
+            cos_tile = ang.cos()   # [H,T,ts,P]
+            sin_tile = ang.sin()
+
+        w_use = w.detach() if detach_w else w
+        # coherent average over tile members i -> [B,H,T,U,P]
+        C = torch.einsum('btui,htip->bhtup', w_use, cos_tile)
+        S = torch.einsum('btui,htip->bhtup', w_use, sin_tile)
+
+        # expand pairs to D and cast
+        cos_k = torch.repeat_interleave(C, 2, dim=-1)  # [B,H,T,U,D]
+        sin_k = torch.repeat_interleave(S, 2, dim=-1)
+        if out_dtype is not None:
+            cos_k = cos_k.to(out_dtype)
+            sin_k = sin_k.to(out_dtype)
+        return cos_k, sin_k
+    
+    def rotate_half(self, x: torch.Tensor) -> torch.Tensor:
+        e, o = x[..., 0::2], x[..., 1::2]
+        return torch.stack((-o, e), dim=-1).reshape_as(x)
+    
+    def rotate_half_tiled(self, x: torch.Tensor) -> torch.Tensor:
+        y = torch.empty_like(x)
+        y[..., 0::2] = -x[..., 1::2]
+        y[..., 1::2] =  x[..., 0::2]
+        return y
+    
+    def mixed_rope(self, x: torch.Tensor) -> torch.Tensor:
+        cos, sin = self.cis(out_dtype=x.dtype)
+        return x * cos + self.rotate_half(x) * sin
+    
+    def mixed_rope_tiled(self, x, w):
+        B, H, K, D = x.shape
+        T, U = self.T, self.U
+        assert K == T * U
+
+        cos, sin = self.cis_tiled(w, out_dtype=x.dtype)   # [B,H,T,U,D]
+        cos = cos.view(B, H, K, D)
+        sin = sin.view(B, H, K, D)
+        return x * cos + self.rotate_half_tiled(x) * sin
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
-        P, S = self.P, self.S
-        assert N == self.N, "num_tokens mismatch"
+        U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
 
-        # queries from all tokens
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)   # [B,H,N,d]
+        patch = x[:, R:, :]  # [B,P,D]
+        patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
+        tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
-        # --- 2×2 mean pooling over patch grid ---
-        
-
-        # [B, H, W, D] -> group 2×2 blocks -> mean over those dims
-        patch = x[:, R:, :]                                
-        p = patch.reshape(B, S, S, D)
-        ctx_2x2 = p.reshape(B, S//2, 2, S//2, 2, D).mean(dim=(2, 4))  # [B, S/2, S/2, D]
-        ctx_learn = ctx_2x2.reshape(B, (S//2)*(S//2), D)              # [B, P/4, D]
+        scores = self.logit(tiled)  # [B, T, ts, U]
+        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
+        out = torch.matmul(w, tiled)  # [B, T, U, D] 
+        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
 
         # prepend registers back
-        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)               # [B, K, D]
+        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
         K = ctx.size(1)
 
         # keys/values from pooled contexts
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
+        q[:, :, R:, :] = self.mixed_rope(q[:, :, R:, :])
+        
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]                                            # [B,H,K,d]
+        k, v = kv[0], kv[1]  # [B,H,K,d]
+        k[:, :, R:, :] = self.mixed_rope_tiled(k[:, :, R:, :], w)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
-        )                                                               # [B,H,N,d]
+        )  # [B,H,N,d]
 
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
         return out, None
-        
 
 # Block
 class ResidualAdd(nn.Module):
@@ -116,28 +313,27 @@ class ResidualAdd(nn.Module):
     y = x + res * (gamma * scale)
     where scale is per-sample DropPath factor in {0, 1/keep}.
     """
+
     def __init__(self, dim: int, drop_prob: float = 0.0, ls_init: float = None):
         super().__init__()
-        self.drop_prob = float(drop_prob) 
-        self.gamma = nn.Parameter(torch.full((dim,), ls_init)) if ls_init is not None else None
-        if ls_init is not None:
-            self.gamma.no_wd = True
-        assert drop_prob == 0 or ls_init is not None
-            
+        self.drop_prob = float(drop_prob)
+        self.gamma = (
+            nn.Parameter(torch.full((dim,), ls_init)) if ls_init is not None else 1
+        )
+
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
-        if self.gamma is None:
-            return x + res
-        
         if not self.training or self.drop_prob == 0.0:
             return x + res * self.gamma
 
         keep = 1.0 - self.drop_prob
         shape = (res.shape[0],) + (1,) * (res.ndim - 1)
-        scale = (torch.rand(shape, dtype=res.dtype, device=res.device) < keep)
+        scale = torch.empty(shape, device=res.device, dtype=torch.float32).bernoulli_(
+            keep
+        )
         scale = scale.to(res.dtype) / keep
         return x + res * (self.gamma * scale)
-    
-    
+
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -154,23 +350,21 @@ class Block(nn.Module):
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
-        skip_attn_drop_path=False,
-        block_idx=-1
+        block_idx=-1,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
         attn_kw = dict(
-                dim = dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                proj_bias=proj_bias,
-                attn_drop=attn_drop,
-                proj_drop=drop
-                )
-        self.attn = ContextAttention(**attn_kw, **ckw)
-        attn_dp = 0 if skip_attn_drop_path else drop_path
-        self.residual_add_attn = ResidualAdd(dim, attn_dp, layerscale)
-        
+            dim=dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
+        self.attn = ContextAttentionRoPE(**attn_kw, **ckw)
+        self.residual_add_attn = ResidualAdd(dim, drop_path, layerscale)
+
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(
             in_features=dim,
@@ -261,7 +455,7 @@ class PatchEmbed(nn.Module):
         if not self.flatten_embedding:
             x = x.reshape(-1, H, W, self.embed_dim)  # B H W C
         return x
-    
+
     def reset_parameters(self):
         k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
         nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
@@ -292,7 +486,8 @@ def named_apply(
 def init_weights_vit_timm(module: nn.Module):
     """ViT weight initialization, original timm impl (for reproducibility)"""
     if isinstance(module, nn.Linear):
-        trunc_normal_(module.weight, std=0.02)
+        if not hasattr(module, "skip_init"):
+            trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.LayerNorm):
@@ -302,7 +497,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv53(nn.Module):
+class ContextViTv56(nn.Module):
     def __init__(
         self,
         ckw,
@@ -325,7 +520,6 @@ class ContextViTv53(nn.Module):
         n_registers=0,
         return_cls_only=True,
         sdp_kernel=SDPBackend.EFFICIENT_ATTENTION,
-        skip_attn_drop_path = False
     ):
         """
         Args:
@@ -374,8 +568,7 @@ class ContextViTv53(nn.Module):
             dpr = [drop_path_rate] * depth
         else:
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
-            dpr[-1] = drop_path_rate
-        print(f"INFO: Drop Path Rates: {[round(n, 3) for n in dpr]}")
+        print(f"INFO: Drop Path Rates: {[round(n, 4) for n in dpr]}")
 
         blocks_list = [
             Block(
@@ -391,7 +584,6 @@ class ContextViTv53(nn.Module):
                 act_layer=act_layer,
                 layerscale=layerscale,
                 block_idx=i,
-                skip_attn_drop_path=skip_attn_drop_path
             )
             for i in range(depth)
         ]
@@ -399,7 +591,12 @@ class ContextViTv53(nn.Module):
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
         self.init_weights()
-    
+        
+    def init_weights(self):
+        trunc_normal_(self.tok_pos_emb, std=0.02)
+        nn.init.normal_(self.tok_regs, std=1e-6)
+        named_apply(init_weights_vit_timm, self)
+        
     @contextmanager
     def return_caches(self):
         prev = []
@@ -412,11 +609,6 @@ class ContextViTv53(nn.Module):
             for b, v in zip(self.blocks, prev):
                 b.attn.return_cache = v
 
-    def init_weights(self):
-        trunc_normal_(self.tok_pos_emb, std=0.02)
-        nn.init.normal_(self.tok_regs, std=1e-6)
-        named_apply(init_weights_vit_timm, self)
-
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
             x = self.patch_embed(x)
@@ -426,11 +618,11 @@ class ContextViTv53(nn.Module):
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
-                
+
     def token_drop(self, x):
         if not self.p_token_drop or not self.training:
             return x
-        patch_idx = 1 + self.n_registers 
+        patch_idx = 1 + self.n_registers
         non_patches, patches = x[:, :patch_idx, :], x[:, patch_idx:, :]
         num_keep = int((1 - self.p_token_drop) * self.n_patches)
         r = torch.rand(x.size(0), self.n_patches, device=x.device)
@@ -446,7 +638,7 @@ class ContextViTv53(nn.Module):
             for blk in self.blocks:
                 x, cache = blk(x)
                 caches.append(cache)
-        
+
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)

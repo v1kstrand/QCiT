@@ -8,7 +8,7 @@ from timm.data import create_transform, Mixup
 
 from modules.utils import IdleMonitor, delete_in_parallel
 from .model import OuterModel
-from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, set_torch_config_v2
+from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, torch_config_v1, torch_config_v2
 from .data import HFImageDataset
 from .train_utils import init_model, OptScheduler, dump_args, set_ema_sd
 from .utils import plot_data, reset
@@ -147,7 +147,8 @@ def load_model(args):
     return {"model" : models, "scheduler" :schedulers}
 
 def prep_training(dict_args, exp):
-    set_torch_config_v2()
+    dict_args["kw"] = exp
+    globals()[dict_args["kw"]["config"]]()
     reset(0)
     delete_in_parallel(num_threads=WORKERS)
 
