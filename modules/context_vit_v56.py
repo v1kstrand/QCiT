@@ -83,11 +83,7 @@ def rope_init_theta(
 @torch.no_grad()
 def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0):
     # --- grid dims ---
-    if isinstance(size, int):
-        H, W = size, size
-    else:
-        H, W = size
-
+    H, W = (size, size) if isinstance(size, int) else size
     ys, xs = torch.meshgrid(
         torch.arange(H),
         torch.arange(W),
