@@ -299,7 +299,7 @@ class ContextAttentionRoPE(nn.Module):
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
         k_r, k_p = k[:, :, :R, :], k[:, :, R:, :]
-        k = torch.cat([k_r, self.mixed_rope_tiled(k_p), ], dim=2)
+        k = torch.cat([k_r, self.mixed_rope_tiled(k_p, w)], dim=2)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
