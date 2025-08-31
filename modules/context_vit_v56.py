@@ -60,7 +60,7 @@ def rope_init_theta(
       gate (or None):   nn.Parameter [H,1,1] multiplying the angle Θ inside RoPE
     """
     assert dim % 4 == 0, "uses banded init (requires head_dim % 4 == 0)"
-    H, P, bands = num_heads, dim // 2, dim // 4
+    H, bands = num_heads, dim // 4
 
     # geometric magnitudes per band, then duplicate to cover two pairs per band
     mag_band = base ** (-torch.arange(bands, dtype=torch.float32) / bands)  # [bands]
@@ -166,19 +166,12 @@ class ContextAttentionRoPE(nn.Module):
         self.attn_drop = attn_drop
         self.out_drop = nn.Dropout(proj_drop)
         self.return_cache = False
-        
-    def cis_from(self, px, py, out_dtype, trig_dtype=torch.float32):
-        tx, ty = self.theta_x, self.theta_y # [1,H,1,pairs]
-        with torch.amp.autocast(device_type=tx.device.type, enabled=False):
-            ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty  # [1,H,Npos,pairs]
-            cos, sin = ang.cos(), ang.sin()
-        return cos.to(out_dtype), sin.to(out_dtype)
 
     def mixed_rope(self, x, px, py):
         B,H,Np,D = x.shape
-        cos, sin = self.cis_from(px, py, out_dtype=x.dtype)       # [1,H,Np,D/2]
-        qp = x.reshape(B, H, Np, D // 2, 2)
-        e, o = qp[..., 0], qp[..., 1]                  # [B,H,Np,D/2]
+        ang = px * self.theta_x + py * self.theta_y
+        cos, sin = ang.cos().to(x.dtype), ang.sin().to(x.dtype)
+        e, o = x.reshape(B, H, Np, D // 2, 2).unbind(-1)
         eΘ = e * cos - o * sin
         oΘ = e * sin + o * cos
         return torch.stack((eΘ, oΘ), dim=-1).reshape_as(x)
@@ -523,7 +516,8 @@ class ContextViTv56(nn.Module):
         finally:
             for b, v in zip(self.blocks, prev):
                 b.attn.return_cache = v
-                
+    
+    @torch.no_grad()
     def init(self):
         S = int(self.patch_embed.n_patches ** 0.5)
         td, U = self.ckw["tile_dim"], self.ckw["tile_comp_size"]
