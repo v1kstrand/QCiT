@@ -45,37 +45,9 @@ class Mlp(nn.Module):
         return x
 
 
-@torch.no_grad()
-def rope_build_pxpy(
-    H_grid,
-    W_grid,
-    include_regs: int = 0,
-    center: bool = False,
-    dtype=torch.float32,
-):
-    ys, xs = torch.meshgrid(
-        torch.arange(H_grid),
-        torch.arange(W_grid),
-        indexing="ij",
-    )
-    px = xs.flatten().to(dtype)
-    py = ys.flatten().to(dtype)
-
-    if center:
-        px -= (W_grid - 1) / 2
-        py -= (H_grid - 1) / 2
-
-    if include_regs > 0:
-        zeros = torch.zeros(include_regs, dtype=dtype)
-        shift = 0.0 if center else 1.0
-        px = torch.cat([zeros, px + shift])
-        py = torch.cat([zeros, py + shift])
-
-    return px, py
-
 
 @torch.no_grad()
-def rope_init_mixed_2d(
+def rope_init_theta(
     dim: int,
     num_heads: int,
     base: float = 100.0,  # geometric ladder base
@@ -108,41 +80,48 @@ def rope_init_mixed_2d(
     theta_y = torch.stack(fy_list, dim=0)  # [H,P]
     return theta_x, theta_y
 
-
 @torch.no_grad()
-def build_pxpy_tiled(S: int, td: int, *, center: bool = True,
-                    dtype=torch.float32):
-    """
-    Returns:
-      px_tile, py_tile: [T, ts] where T = (S/td)^2 and ts = td^2,
-      ordered exactly like:
-        x[:, R:, :].view(B, S//td, td, S//td, td, D)
-                    .transpose(2, 3)   # swap tile-rows with block-cols
-                    .contiguous()
-                    .view(B, T, ts, D)
-    """
-    assert S % td == 0
+def rope_build_pxpy(size, center=True, include_regs=0, tile_dim=0):
+    # --- grid dims ---
+    if isinstance(size, int):
+        H, W = size, size
+    else:
+        H, W = size
+
     ys, xs = torch.meshgrid(
-        torch.arange(S),
-        torch.arange(S),
+        torch.arange(H),
+        torch.arange(W),
         indexing="ij",
     )
-    px = xs.to(dtype)
-    py = ys.to(dtype)
+    px = xs.to(torch.float32)
+    py = ys.to(torch.float32)
     if center:
-        px -= (S - 1) / 2
-        py -= (S - 1) / 2
+        px = px - (W - 1) / 2
+        py = py - (H - 1) / 2
 
-    # match tiling order: [HB, tr, WB, tc] -> swap -> [HB, WB, tr, tc] -> [T, ts]
-    px_tile = (px.view(S // td, td, S // td, td)
+    if tile_dim == 0:
+        px_flat = px.reshape(-1)
+        py_flat = py.reshape(-1)
+        if include_regs > 0:
+            zeros = torch.zeros(include_regs, dtype=torch.float32)
+            shift = 0.0 if center else 1.0
+            px_flat = torch.cat([zeros, px_flat + shift], dim=0)
+            py_flat = torch.cat([zeros, py_flat + shift], dim=0)
+        return px_flat, py_flat
+    
+    # --- tiled path ---
+    td = tile_dim
+    # [HB, tr, WB, tc] -> swap -> [HB, WB, tr, tc] -> [T, ts]
+    px_tile = (px.view(H // td, td, W // td, td)
                  .transpose(1, 2)
                  .contiguous()
-                 .view(-1, td * td))                # [T, ts]
-    py_tile = (py.view(S // td, td, S // td, td)
+                 .view(-1, td * td))                  # [T, ts]
+    py_tile = (py.view(H // td, td, W // td, td)
                  .transpose(1, 2)
                  .contiguous()
-                 .view(-1, td * td))                # [T, ts]
-    return px_tile, py_tile
+                 .view(-1, td * td))                  # [T, ts]
+
+    return px_tile.mean(dim=-1), py_tile.mean(dim=-1)
 
 
 class ContextAttentionRoPE(nn.Module):
@@ -176,17 +155,9 @@ class ContextAttentionRoPE(nn.Module):
         self.T = self.P // ts # number of tiles
         self.U = tile_comp_size 
         
-        px, py = rope_build_pxpy(self.S, self.S, 0, center=True)
-        pxT, pyT = build_pxpy_tiled(self.S, self.td, center=True)
-        
-        self.register_buffer("px", px)  # [P]
-        self.register_buffer("py", py)  # [P]
-        self.register_buffer("pxT", pxT)  # [T, ts]
-        self.register_buffer("pyT", pyT)  # [T, ts]
-        
-        theta_x, theta_y = rope_init_mixed_2d(self.d, num_heads)
-        self.theta_x = nn.Parameter(theta_x)  # [H,P]
-        self.theta_y = nn.Parameter(theta_y)  # [H,P]
+        theta_x, theta_y = rope_init_theta(self.d, num_heads)
+        self.theta_x = nn.Parameter(theta_x[None, :, None, :])  # [H,P]
+        self.theta_y = nn.Parameter(theta_y[None, :, None, :])  # [H,P]
         self.theta_x.no_wd = True  # flag for optimizer
         self.theta_y.no_wd = True
 
@@ -200,78 +171,24 @@ class ContextAttentionRoPE(nn.Module):
         self.out_drop = nn.Dropout(proj_drop)
         self.return_cache = False
         
-    def cis(self, out_dtype=None, trig_dtype=torch.float32):
-        """
-        Mixed 2D RoPE for Q
-        Returns cos,sin: [1, H, N, D]
-        """
-        # px_q, py_q: [N]; theta_x/y: [H,P]; D=2P
-        px = self.px[None, None, :, None]         # [1,1,N,1]
-        py = self.py[None, None, :, None]         # [1,1,N,1]
-        tx = self.theta_x[None, :, None, :]         # [1,H,1,P]
-        ty = self.theta_y[None, :, None, :]         # [1,H,1,P]
-
-        with torch.amp.autocast(device_type=px.device.type, enabled=False):
-            ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty   # [1,H,N,P]
-            cos = torch.repeat_interleave(ang.cos(), 2, dim=-1)     # [1,H,N,D]
-            sin = torch.repeat_interleave(ang.sin(), 2, dim=-1)
-
+    def cis_from(self, px, py, out_dtype=None, trig_dtype=torch.float32):
+        tx, ty = self.theta_x, self.theta_y # [1,H,1,pairs]
+        with torch.amp.autocast(device_type=tx.device.type, enabled=False):
+            ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty  # [1,H,Npos,pairs]
+            cos, sin = ang.cos(), ang.sin()
         if out_dtype is not None:
-            cos = cos.to(out_dtype)
-            sin = sin.to(out_dtype)
-        return cos, sin
-    
-    def cis_tiled(self, w: torch.Tensor, *, out_dtype=None, detach_w: bool = True):
-        """
-        Mixed 2D RoPE for **compressed K** using tile-phase coherent averaging.
-        Inputs:
-        w: [B, T, U, ts]  (softmax over ts)
-        Returns:
-        cos_k, sin_k: [B, H, T, U, D]  (for the compressed part only; skip regs outside)
-        """
-        ang = (self.theta_x[:, None, None, :] * self.pxT[None, :, :, None] +
-            self.theta_y[:, None, None, :] * self.pyT[None, :, :, None])
+            cos = cos.to(out_dtype); sin = sin.to(out_dtype)
+        return cos, sin  # pair-space
 
-        with torch.amp.autocast(device_type=ang.device.type, enabled=False):
-            cos_tile = ang.cos()   # [H,T,ts,P]
-            sin_tile = ang.sin()
-
-        w_use = w.detach() if detach_w else w
-        # coherent average over tile members i -> [B,H,T,U,P]
-        C = torch.einsum('btui,htip->bhtup', w_use, cos_tile)
-        S = torch.einsum('btui,htip->bhtup', w_use, sin_tile)
-
-        # expand pairs to D and cast
-        cos_k = torch.repeat_interleave(C, 2, dim=-1)  # [B,H,T,U,D]
-        sin_k = torch.repeat_interleave(S, 2, dim=-1)
-        if out_dtype is not None:
-            cos_k = cos_k.to(out_dtype)
-            sin_k = sin_k.to(out_dtype)
-        return cos_k, sin_k
-    
-    def rotate_half(self, x: torch.Tensor) -> torch.Tensor:
-        e, o = x[..., 0::2], x[..., 1::2]
-        return torch.stack((-o, e), dim=-1).reshape_as(x)
-    
-    def rotate_half_tiled(self, x: torch.Tensor) -> torch.Tensor:
-        y = torch.empty_like(x)
-        y[..., 0::2] = -x[..., 1::2]
-        y[..., 1::2] =  x[..., 0::2]
-        return y
-    
-    def mixed_rope(self, x: torch.Tensor) -> torch.Tensor:
-        cos, sin = self.cis(out_dtype=x.dtype)
-        return x * cos + self.rotate_half(x) * sin
-    
-    def mixed_rope_tiled(self, x, w):
-        B, H, K, D = x.shape
-        T, U = self.T, self.U
-        assert K == T * U
-
-        cos, sin = self.cis_tiled(w, out_dtype=x.dtype)   # [B,H,T,U,D]
-        cos = cos.view(B, H, K, D)
-        sin = sin.view(B, H, K, D)
-        return x * cos + self.rotate_half_tiled(x) * sin
+    def mixed_rope(self, x, get_q = True):
+        B,H,Np,D = x.shape
+        px, py = (self.px, self.py) if get_q else (self.pxT, self.pyT)
+        cos, sin = self.cis_from(px, py, out_dtype=x.dtype)       # [1,H,Np,D/2]
+        qp = x.reshape(B, H, Np, D // 2, 2)
+        e, o = qp[..., 0], qp[..., 1]                  # [B,H,Np,D/2]
+        eΘ = e * cos - o * sin
+        oΘ = e * sin + o * cos
+        return torch.stack((eΘ, oΘ), dim=-1).reshape_as(x)
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
@@ -283,7 +200,7 @@ class ContextAttentionRoPE(nn.Module):
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
         scores = self.logit(tiled)  # [B, T, ts, U]
-        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
+        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(x.dtype)  # [B,T,U,ts]
         out = torch.matmul(w, tiled)  # [B, T, U, D] 
         ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
 
@@ -294,12 +211,12 @@ class ContextAttentionRoPE(nn.Module):
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
         q_r, q_p = q[:, :, :R, :], q[:, :, R:, :]
-        q = torch.cat([q_r, self.mixed_rope(q_p), ], dim=2)
+        q = torch.cat([q_r, self.mixed_rope(q_p)], dim=2)
         
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
         k_r, k_p = k[:, :, :R, :], k[:, :, R:, :]
-        k = torch.cat([k_r, self.mixed_rope_tiled(k_p, w)], dim=2)
+        k = torch.cat([k_r, self.mixed_rope(k_p, get_q=False)], dim=2)
 
         # SDPA
         x_attn = F.scaled_dot_product_attention(
@@ -550,6 +467,7 @@ class ContextViTv56(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
+        self.ckw = ckw
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -610,6 +528,25 @@ class ContextViTv56(nn.Module):
         finally:
             for b, v in zip(self.blocks, prev):
                 b.attn.return_cache = v
+                
+    def init(self):
+        S = int(self.patch_embed.n_patches ** 0.5)
+        td, U = self.ckw["tile_dim"], self.ckw["tile_comp_size"]
+        px, py = rope_build_pxpy(S)
+        pxT, pyT = rope_build_pxpy(S, tile_dim=td)
+        pxT = pxT.repeat_interleave(U)  # [T*U]
+        pyT = pyT.repeat_interleave(U)  # [T*U]
+
+        self.register_buffer("px", px[None, None, :, None])  # [P]
+        self.register_buffer("py", py[None, None, :, None])  # [P]
+        self.register_buffer("pxT", pxT[None, None, :, None])  # [T, ts]
+        self.register_buffer("pyT", pyT[None, None, :, None])  # [T, ts]
+        
+        for blk in self.blocks:
+            blk.attn.px = self.px
+            blk.attn.py = self.py
+            blk.attn.pxT = self.pxT
+            blk.attn.pyT = self.pyT
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
