@@ -543,6 +543,7 @@ class ContextViTv56(nn.Module):
             blk.attn.py = self.py
             blk.attn.pxT = self.pxT
             blk.attn.pyT = self.pyT
+        self = self.cuda()
 
     def prepare_tokens(self, x):
         with torch.profiler.record_function("Patch Embed"):
