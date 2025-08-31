@@ -180,7 +180,7 @@ class ContextAttentionRoPE(nn.Module):
             cos = cos.to(out_dtype); sin = sin.to(out_dtype)
         return cos, sin  # pair-space
 
-    def mixed_rope(self, x, get_q = True):
+    def mixed_rope(self, x, get_q=True):
         B,H,Np,D = x.shape
         px, py = (self.px, self.py) if get_q else (self.pxT, self.pyT)
         cos, sin = self.cis_from(px, py, out_dtype=x.dtype)       # [1,H,Np,D/2]
@@ -199,8 +199,8 @@ class ContextAttentionRoPE(nn.Module):
         patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
-        scores = self.logit(tiled)  # [B, T, ts, U]
-        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(x.dtype)  # [B,T,U,ts]
+        logit = self.logit(tiled)  # [B, T, ts, U]
+        w = F.softmax(logit.transpose(-1, -2).float(), dim=-1).to(x.dtype)  # [B,T,U,ts]
         out = torch.matmul(w, tiled)  # [B, T, U, D] 
         ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
 
