@@ -52,6 +52,8 @@ def train_loop(model_dict, data_dict, args, exp, magic=10):
     loader, tracker = data_dict["train_loader"], sched[args.opt["log"][0]]
     next_stats, init_run = tracker.curr_step + args.freq["stats"], True
 
+    validate(model_dict, data_dict, args, exp)
+    
     stats = {name: defaultdict(list) for name in models}
     for _ in range(args.epochs):
 
