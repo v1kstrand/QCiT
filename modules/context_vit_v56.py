@@ -149,7 +149,7 @@ class ContextAttentionRoPE(nn.Module):
         self.ts = ts = tile_dim ** 2 # tile size
         assert self.P % ts == 0 and self.S % self.td == 0
         self.T = self.P // ts # number of tiles
-        self.U = tile_comp_size 
+        self.U = tile_comp_size
         
         theta_x, theta_y = rope_init_theta(self.d, num_heads)
         self.theta_x = nn.Parameter(theta_x[None, :, None, :])  # [H,P]
@@ -158,7 +158,7 @@ class ContextAttentionRoPE(nn.Module):
         self.theta_y.no_wd = True
 
         self.logit = nn.Linear(dim, self.U, bias=False)
-        self.logit.no_wd = True 
+        self.logit.no_wd = True
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -173,7 +173,7 @@ class ContextAttentionRoPE(nn.Module):
             ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty  # [1,H,Npos,pairs]
             cos, sin = ang.cos(), ang.sin()
         if out_dtype is not None:
-            cos = cos.to(out_dtype); sin = sin.to(out_dtype)
+            cos, sin = cos.to(out_dtype), sin.to(out_dtype)
         return cos, sin  # pair-space
 
     def mixed_rope(self, x, px, py):
