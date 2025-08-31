@@ -167,13 +167,11 @@ class ContextAttentionRoPE(nn.Module):
         self.out_drop = nn.Dropout(proj_drop)
         self.return_cache = False
         
-    def cis_from(self, px, py, out_dtype=None, trig_dtype=torch.float32):
+    def cis_from(self, px, py, out_dtype, trig_dtype=torch.float32):
         tx, ty = self.theta_x, self.theta_y # [1,H,1,pairs]
         with torch.amp.autocast(device_type=tx.device.type, enabled=False):
             ang = px.to(trig_dtype) * tx + py.to(trig_dtype) * ty  # [1,H,Npos,pairs]
-            cos, sin = ang.cos(), ang.sin()
-        if out_dtype is not None:
-            cos, sin = cos.to(out_dtype), sin.to(out_dtype)
+            cos, sin = torch.sincos(ang).to(out_dtype)
         return cos, sin  # pair-space
 
     def mixed_rope(self, x, px, py):

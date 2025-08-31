@@ -93,7 +93,7 @@ class ContextAttention(nn.Module):
         U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
 
         patch = x[:, R:, :]  # [B,P,D]
-        patch = patch.reshape(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
+        patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
         scores = self.logit(tiled)  # [B, T, ts, U]
