@@ -106,7 +106,7 @@ def torch_config_v1():
     inductor_config.cuda.cutlass_max_profiling_configs = None  # tune _all_ kernels
     inductor_config.cuda.cutlass_backend_min_gemm_size = 32 * 32 * 32  # small GEMMs → Triton
     inductor_config.cuda.cutlass_op_denylist_regex = "pingpong"  # filter unstable kernels
-    print("INFO: Torch Config Set ✔✔")
+    print("INFO: Torch Config V1 Set ✔✔")
     
 def torch_config_v2(safe_config: bool = True):
 
