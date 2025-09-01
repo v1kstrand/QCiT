@@ -45,7 +45,7 @@ class Mlp(nn.Module):
         return x
 
 
-class ContextAttentionV2(nn.Module):
+class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
