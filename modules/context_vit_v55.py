@@ -93,12 +93,12 @@ class ContextAttention(nn.Module):
         U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
 
         patch = x[:, R:, :]  # [B,P,D]
-        patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
+        patch = patch.reshape(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
         scores = self.logit(tiled)  # [B, T, ts, U]
         w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
-        out = torch.matmul(w, tiled)  # [B, T, U, D] 
+        out = torch.matmul(w, tiled)  # [B, T, U, D]
         ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
 
         # prepend registers back
@@ -107,7 +107,6 @@ class ContextAttention(nn.Module):
 
         # keys/values from pooled contexts
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
-        
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # [B,H,K,d]
 

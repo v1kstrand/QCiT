@@ -176,10 +176,10 @@ class ContextAttentionRoPE(nn.Module):
         self.return_cache = False
 
     def mixed_rope(self, x, px, py):
-        B,H,Np,D = x.shape
+        B,H,N,D = x.shape
         ang = px * self.theta_x + py * self.theta_y
         cos, sin = ang.cos().to(x.dtype), ang.sin().to(x.dtype)
-        e, o = x.reshape(B, H, Np, D // 2, 2).unbind(-1)
+        e, o = x.reshape(B, H, N, D // 2, 2).unbind(-1)
         eΘ = e * cos - o * sin
         oΘ = e * sin + o * cos
         return torch.stack((eΘ, oΘ), dim=-1).reshape_as(x)
@@ -197,8 +197,7 @@ class ContextAttentionRoPE(nn.Module):
 
         logit = self.logit(tiled)  # [B, T, ts, U]
         w = F.softmax(logit.transpose(-1, -2).float(), dim=-1).to(x.dtype)  # [B,T,U,ts]
-        out = torch.matmul(w, tiled)  # [B, T, U, D] 
-        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
+        ctx_learn = torch.matmul(w, tiled).reshape(B, T*U, D)  # [B, T*U, D]
 
         # prepend registers back
         ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
