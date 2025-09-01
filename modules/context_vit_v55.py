@@ -96,10 +96,18 @@ class ContextAttention(nn.Module):
         patch = patch.reshape(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
 
-        scores = self.logit(tiled)  # [B, T, ts, U]
-        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
-        out = torch.matmul(w, tiled)  # [B, T, U, D]
-        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
+        # scores: [B, T, ts, U]
+        scores = self.logit(tiled)                       # stay in model dtype
+
+        # softmax over ts (no transpose); do numerics in fp32, cast back once
+        w = F.softmax(scores.to(torch.float32), dim=2).to(tiled.dtype)   # [B, T, ts, U]
+
+        # pool ts members into U protos WITHOUT layout flips
+        # option A: einsum contraction (usually best with torch.compile)
+        out = torch.einsum('btsu,btsd->btud', w, tiled)  # [B, T, U, D]
+
+        # flatten tile×proto
+        ctx_learn = out.contiguous().view(B, T * U, D)   # [B, T*U, D]
 
         # prepend registers back
         ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
