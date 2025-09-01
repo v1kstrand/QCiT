@@ -45,8 +45,7 @@ class Mlp(nn.Module):
         return x
 
 
-
-class ContextAttention(nn.Module):
+class ContextAttentionV2(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -58,64 +57,70 @@ class ContextAttention(nn.Module):
         proj_drop: float = 0.0,
         proj_bias: bool = True,
         tile_comp_size: int = 1,
-        tile_dim = 1,
+        tile_dim: int = 1,
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
         self.H = num_heads
         self.d = dim // num_heads
-        
+
         self.N = num_tokens
         self.R = num_regs
         self.P = num_tokens - num_regs
-        
-        self.S = int(self.P**0.5) # grid size (S x S)
-        self.td = tile_dim # tile dim
-        self.ts = ts = tile_dim ** 2 # tile size
-        assert self.P % ts == 0 and self.S % self.td == 0
-        self.T = self.P // ts # number of tiles
-        self.U = tile_comp_size 
 
-        self.logit = nn.Linear(dim, self.U, bias=False)
-        self.logit.no_wd = True # respected by optimizer
-        self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.S = int(self.P ** 0.5)    # grid size (S x S)
+        self.td = tile_dim             # tile dim
+        self.ts = tile_dim ** 2        # tokens per tile
+        assert self.S * self.S == self.P, "num_tokens - num_regs must be a perfect square"
+        assert self.P % self.ts == 0 and self.S % self.td == 0, "tile/grid mismatch"
+        self.T = self.P // self.ts     # number of tiles
+        self.U = tile_comp_size
+
+        self.logit    = nn.Linear(dim, self.U, bias=False)
+        self.logit.no_wd = True  # respected by optimizer
+        self.proj_q   = nn.Linear(dim, dim, bias=qkv_bias)
+        self.proj_kv  = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
 
         self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
+        self.out_drop  = nn.Dropout(proj_drop)
         self.return_cache = False
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
-        U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
+        S, td, ts, T, U = self.S, self.td, self.ts, self.T, self.U
+        assert N == self.N, "num_tokens mismatch"
 
-        patch = x[:, R:, :]  # [B,P,D]
-        patch = patch.reshape(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
-        tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
+        # --- tile patches to [B, T, ts, D] ---
+        patch = x[:, R:, :]                                  # [B,P,D]
+        patch = patch.view(B, S // td, td, S // td, td, D)   # [B,S/td,td,S/td,td,D]
+        tiled = patch.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, T, ts, D)  # [B,T,ts,D]
 
-        scores = self.logit(tiled)  # [B, T, ts, U]
-        w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
-        out = torch.matmul(w, tiled)  # [B, T, U, D]
-        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
+        # --- per-tile logits; softmax over ts (no transpose, consistent dtype) ---
+        scores = self.logit(tiled)                # [B,T,ts,U] ; stays in model dtype
+        w = F.softmax(scores, dim=2)              # [B,T,ts,U] ; sum over ts == 1
 
-        # prepend registers back
-        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
+        # --- pool ts members into U protos: [B,T,U,D] ---
+        # avoids layout flip + big contiguous tmp
+        ctx_u = torch.einsum('btsu,btsd->btud', w, tiled)    # [B,T,U,D]
+
+        # --- flatten tile/proto and prepend regs ---
+        ctx_learn = ctx_u.contiguous().view(B, T * U, D)     # [B,T*U,D]
+        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)     # [B,K,D] ; K = R + T*U
         K = ctx.size(1)
 
-        # keys/values from pooled contexts
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
-        kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]  # [B,H,K,d]
+        # --- Q/KV and SDPA ---
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2).contiguous()     # [B,H,N,d]
+        kv = self.proj_kv(ctx).view(B, K, 2, H, d).permute(2, 0, 3, 1, 4).contiguous()
+        k, v = kv[0], kv[1]                                                  # [B,H,K,d]
 
-        # SDPA
         x_attn = F.scaled_dot_product_attention(
             q, k, v, dropout_p=self.attn_drop if self.training else 0.0
-        )  # [B,H,N,d]
+        )                                                                     # [B,H,N,d]
 
-        out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
+        out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).contiguous().view(B, N, D)))
         return out, None
     
 # Block
