@@ -13,8 +13,11 @@ def set_ema_sd(model):
     ema_sd = {"par":{}, "buf":{}}
     for n, t in model.named_parameters():
         ema_sd["par"][n] = t.detach().to(torch.float32).clone()
+    
+    sd = model.state_dict().keys()
     for n, b in model.named_buffers():
-        ema_sd["buf"][n] = b.detach().clone()
+        if n in sd:
+            ema_sd["buf"][n] = b.detach().clone()
     return ema_sd
 
 @torch.no_grad()
@@ -27,8 +30,10 @@ def update_ema_sd(model, step, ramp=100_000, start=0.9):
         e = ema_sd["par"][n]
         ema_sd["par"][n].mul_(decay).add_(p.detach().to(e.dtype), alpha=1.0 - decay)
 
+    sd = model.state_dict().keys()
     for n, b in model.named_buffers():
-        ema_sd["buf"][n].copy_(b.detach())
+        if n in sd:
+            ema_sd["buf"][n].copy_(b.detach())
 
 @torch.no_grad()
 def load_ema_sd(model):
