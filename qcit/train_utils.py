@@ -43,10 +43,12 @@ def load_ema_sd(model):
     for n, p in ema_sd["par"].items():
         rt = curr_sd[n]
         aligned[n] = p.to(device=rt.device, dtype=rt.dtype)
-        
+    
+    sd = model.state_dict().keys()
     for n, p in ema_sd["buf"].items():
-        rt = curr_sd[n]
-        aligned[n] = p.to(device=rt.device, dtype=rt.dtype)
+        if n in sd:
+            rt = curr_sd[n]
+            aligned[n] = p.to(device=rt.device, dtype=rt.dtype)
         
     model.load_state_dict(aligned, strict=True)
 
