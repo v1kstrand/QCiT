@@ -535,7 +535,7 @@ class ContextViTv57(nn.Module):
             x = self.patch_embed(x)
         with torch.profiler.record_function("prepare Tokens"):
             reg_tokens = self.tok_regs.expand(x.size(0), -1, -1)
-            x = torch.cat((reg_tokens, x), dim=1) + self.tok_pos_emb
+            x = torch.cat((reg_tokens, x), dim=1) #+ self.tok_pos_emb
         with torch.profiler.record_function("Token Drop"):
             x = self.token_drop(x)
         return x
