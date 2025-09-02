@@ -39,6 +39,7 @@ def update_ema_sd(model, step, ramp=100_000, start=0.9):
 def load_ema_sd(model):
     curr_sd = model.state_dict()
     ema_sd = model.ema_sd
+    
     aligned = {}
     for n, p in ema_sd["par"].items():
         rt = curr_sd[n]
