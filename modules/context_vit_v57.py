@@ -107,7 +107,7 @@ class ContextAttention(nn.Module):
         self.ts = ts = tile_dim ** 2 # tile size
         assert self.P % ts == 0 and self.S % self.td == 0
         self.T = self.P // ts # number of tiles
-        self.U = tile_comp_size 
+        self.U = tile_comp_size
 
         self.logit = no_wd(nn.Linear(dim, self.U, bias=False))
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
