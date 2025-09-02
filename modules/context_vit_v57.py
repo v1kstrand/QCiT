@@ -336,8 +336,6 @@ def init_weights_vit_timm(module: nn.Module):
     if isinstance(module, nn.Linear):
         if not hasattr(module, "no_init"):
             trunc_normal_(module.weight, std=0.02)
-        else:
-            print(module)
         if module.bias is not None:
             nn.init.zeros_(module.bias)
     elif isinstance(module, nn.LayerNorm):
