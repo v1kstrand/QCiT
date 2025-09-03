@@ -145,10 +145,9 @@ class ContextAttention(nn.Module):
         k, v = kv[0], kv[1]  # [B,H,K,d]
 
         # SDPA
-        attn_bias = self.cpb_mlp()
         x_attn = F.scaled_dot_product_attention(
             q, k, v, 
-            attn_mask =attn_bias,
+            attn_mask =self.cpb_mlp(),
             dropout_p=self.attn_drop if self.training else 0.0
         )  # [B,H,N,d]
 
