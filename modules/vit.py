@@ -466,4 +466,4 @@ class VisionTransformer(nn.Module):
         x = x[:, 0, :] if self.return_cls_only else x
         with torch.profiler.record_function("Final Norm"):
             out = self.norm(x)
-        return (out, None) if self.training else out
+        return (out, []) if self.training else out
