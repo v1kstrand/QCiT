@@ -462,5 +462,8 @@ class VisionTransformer(nn.Module):
         x = self.prepare_tokens(x)
         for blk in self.blocks:
             x = blk(x)
-        out = self.norm(x)
-        return out[:, 0, :] if self.return_cls_only else out
+            
+        x = x[:, 0, :] if self.return_cls_only else x
+        with torch.profiler.record_function("Final Norm"):
+            out = self.norm(x)
+        return (out, None) if self.training else out

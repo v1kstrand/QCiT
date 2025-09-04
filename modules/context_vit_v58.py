@@ -55,6 +55,13 @@ class Mlp(nn.Module):
         return x
 
 
+def soft_clip01(x: torch.Tensor, beta: float = 10.0) -> torch.Tensor:
+    """
+    Smooth clamp to [0, 1] using a softplus-based approximation of clamp.
+    beta: stiffness (↑beta -> sharper, closer to hard clamp)
+    """
+    return (F.softplus(beta * (x)) - F.softplus(beta * (x - 1.0))) / beta
+
 class CPB2D(nn.Module):
     """
     Continuous Position Bias (2D, Swin-v2 style).
@@ -74,8 +81,9 @@ class CPB2D(nn.Module):
         nn.init.zeros_(self.mlp[-1].weight)
         nn.init.zeros_(self.mlp[-1].bias)
 
-    def forward(self) -> torch.Tensor:
-        out = self.mlp(self.feats)                # [N, K_ctx, H]
+    def forward(self, C) -> torch.Tensor:
+        inp = torch.cat([self.feats, soft_clip01(C)], dim=-1)  # [N, K_ctx, 2+c]
+        out = self.mlp(inp)                       # [N, K_ctx, H]
         return out.permute(2, 0, 1).contiguous() * self.mask
 
 
@@ -90,6 +98,7 @@ class ContextAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         proj_bias: bool = True,
+        C_dim: int = 3,
         tile_comp_size: int = 1,
         tile_dim = 1,
     ):
@@ -109,8 +118,10 @@ class ContextAttention(nn.Module):
         assert self.P % ts == 0 and self.S % self.td == 0
         self.T = self.P // ts # number of tiles
         self.U = tile_comp_size
+        self.c = C_dim
 
         self.logit = no_wd(nn.Linear(dim, self.U, bias=False))
+        self.w_to_C = no_wd(nn.Linear(dim, C_dim, bias=False))
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
@@ -124,7 +135,7 @@ class ContextAttention(nn.Module):
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
-        U, S, T, td, ts = self.U, self.S, self.T, self.td, self.ts
+        U, S, T, td, ts, c = self.U, self.S, self.T, self.td, self.ts, self.c
 
         patch = x[:, R:, :]  # [B,P,D]
         patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
@@ -148,7 +159,7 @@ class ContextAttention(nn.Module):
         # SDPA
         x_attn = F.scaled_dot_product_attention(
             q, k, v, 
-            attn_mask =self.cpb_mlp(),
+            attn_mask =self.cpb_mlp(self.w_to_C(w.view(B, T * U, c))),
             dropout_p=self.attn_drop if self.training else 0.0
         )  # [B,H,N,d]
 
