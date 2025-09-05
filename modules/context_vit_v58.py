@@ -190,22 +190,21 @@ class ContextAttention(nn.Module):
         C = soft_clip01(self.w_to_C(w.view(B, T * U, ts).detach()))  # likely BF16 under autocast
 
         # ---------- FP32 master -> BF16 views for flex path ----------
-        q_dtype = q.dtype  # typically torch.bfloat16 under autocast
+        q_dtype   = q.dtype  # typically torch.bfloat16 under autocast
         W1_bf16   = self.W1.to(q_dtype)
         b1_bf16   = self.b1.to(q_dtype)
         W2_bf16   = self.W2.to(q_dtype)
-        alpha_bf16= self.alpha.to(q_dtype)
         feats_bf16= self.feats.to(q_dtype)
         C_bf16    = C.to(q_dtype)
+
+        # precompute α[h] = sigmoid(alpha[h]) once per forward (BF16 view)
+        a_bf16    = torch.sigmoid(self.alpha).to(q_dtype)  # [H]
 
         K_t, R_t, zero_idx = self.K_t, self.R_t, self.zero_idx
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             # gate out any row/col that touches regs
             reg_gate = ((q_idx >= R_t) & (kv_idx >= R_t))
-
-            # per-head gate α ∈ [0,1]
-            a = torch.sigmoid(alpha_bf16.index_select(0, h_idx.view(1)).squeeze(0))
 
             # φ(q,k) from flattened table
             lin = (q_idx * K_t + kv_idx).view(1)
@@ -222,6 +221,7 @@ class ContextAttention(nn.Module):
             w1  = W1_bf16.index_select(0, h1).squeeze(0)  # [HID, 2+c]
             bb1 = b1_bf16.index_select(0, h1).squeeze(0)  # [HID]
             w2  = W2_bf16.index_select(0, h1).squeeze(0)  # [HID]
+            a   = a_bf16.index_select(0, h1).squeeze(0)   # scalar in [0,1]
 
             # first layer split (no concat) via matvecs
             w1_phi = w1[:, :2]         # [HID, 2]
