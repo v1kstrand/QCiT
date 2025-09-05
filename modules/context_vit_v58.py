@@ -286,8 +286,12 @@ class ContextAttention(nn.Module):
         # Python ints (avoid captured tensors)s
         K_py: int = self.K
         R_py: int = self.R
+        
+        AAA = torch.randn(10, 10)
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            aaa = AAA[0]
+            """
             # --- gating predicate (scalar bool) ---
             reg_bool = (q_idx >= R_py) & (kv_idx >= R_py)
 
@@ -295,7 +299,6 @@ class ContextAttention(nn.Module):
             # --- φ(q,k): scalarize to avoid vector×vector broadcasts ---
             lin = (q_idx * K_py + kv_idx).view(1)                  # [1] int64
             phi = feats_bf16[lin]      # [2]
-            """
             phi0, phi1 = phi[0], phi[1]                            # scalars
             
             
