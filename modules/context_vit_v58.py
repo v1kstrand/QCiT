@@ -331,8 +331,8 @@ class ContextAttention(nn.Module):
             bias_gated = torch.where(reg_bool, bias, bias - bias)"""
 
             return score
-
-        x_attn = flex_attention(q, k, v, score_mod=score_mod)
+        with torch.autograd.set_detect_anomaly(False):
+            x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
         return out, None
 
