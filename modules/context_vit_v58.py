@@ -312,6 +312,7 @@ class ContextAttention(nn.Module):
             # --- First layer: scalarized φ-part ---
             hid_pre = bb1 + w1p[:, 0] * phi0 + w1p[:, 1] * phi1    # [HID]
 
+            """
             # --- c-part: UNROLL EXACTLY 3 (avoid broadcast/expand) ---
             hid_pre = hid_pre + w1c[:, 0] * cvec[0]
             hid_pre = hid_pre + w1c[:, 1] * cvec[1]
@@ -324,9 +325,9 @@ class ContextAttention(nn.Module):
             bias = (w2s * hid).sum()                                # scalar
 
             # --- additive gate (avoid bias * gate multiply) ---
-            bias_gated = torch.where(reg_bool, bias, bias - bias)
+            bias_gated = torch.where(reg_bool, bias, bias - bias)"""
 
-            return score + bias_gated
+            return score
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
