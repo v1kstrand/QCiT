@@ -14,12 +14,11 @@ from torch.nn.init import trunc_normal_
 from torch import Tensor
 from torch.nn.attention import SDPBackend
 import torch.nn.functional as F
-
+from torch.nn.attention.flex_attention import flex_attention
 
 def no_wd(m: nn.Module) -> None:
     m.no_wd = True
     return m
-
 def no_init(m: nn.Module) -> None:
     m.no_init = True
     return m
@@ -62,107 +61,169 @@ def soft_clip01(x: torch.Tensor, beta: float = 10.0) -> torch.Tensor:
     """
     return (F.softplus(beta * (x)) - F.softplus(beta * (x - 1.0))) / beta
 
-class CPB2D(nn.Module):
-    """
-    Continuous Position Bias (2D, Swin-v2 style).
-    Input per pair: φx = sign(dx)*log1p(|dx|), φy = sign(dy)*log1p(|dy|)
-    Output: per-head additive bias of shape [H, N, K_ctx].
-    """
-    def __init__(self, num_heads: int, hidden: int = 32):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, num_heads),
-        )
-        self.feats = self.mask = None
-        
-    def reset_parameters(self):
-        nn.init.zeros_(self.mlp[-1].weight)
-        nn.init.zeros_(self.mlp[-1].bias)
-
-    def forward(self, C) -> torch.Tensor:
-        inp = torch.cat([self.feats, soft_clip01(C)], dim=-1)  # [N, K_ctx, 2+c]
-        out = self.mlp(inp)                       # [N, K_ctx, H]
-        return out.permute(2, 0, 1).contiguous() * self.mask
-
-
 class ContextAttention(nn.Module):
     def __init__(
         self,
         dim: int,
         num_tokens: int,
         num_heads: int = 6,
-        num_regs: int = 1,  # first R tokens are [CLS/REG...]
+        num_regs: int = 1,              # first R tokens are [CLS/REG...]
         qkv_bias: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         proj_bias: bool = True,
         C_dim: int = 3,
-        tile_comp_size: int = 1,
-        tile_dim = 1,
+        tile_comp_size: int = 1,        # U
+        tile_dim: int = 1,              # td
+        mlp_hidden: int = 8,            # tiny MLP width inside score_mod
+        gate_init: float = 0.05,        # initial α via sigmoid
     ):
         super().__init__()
         assert dim % num_heads == 0, "dim must be divisible by num_heads"
         self.dim = dim
-        self.H = num_heads
+        self.H = H =  num_heads
         self.d = dim // num_heads
-        
+
         self.N = num_tokens
         self.R = num_regs
         self.P = num_tokens - num_regs
-        
-        self.S = int(self.P**0.5) # grid size (S x S)
-        self.td = tile_dim # tile dim
-        self.ts = ts = tile_dim ** 2 # tile size
-        assert self.P % ts == 0 and self.S % self.td == 0
-        self.T = self.P // ts # number of tiles
-        self.U = tile_comp_size
-        self.c = C_dim
 
-        self.logit = no_wd(nn.Linear(dim, self.U, bias=False))
-        self.w_to_C = no_wd(nn.Linear(dim, C_dim, bias=False))
-        self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.S = int(self.P ** 0.5)               # grid side (S x S)
+        self.td = tile_dim                         # tile side
+        self.ts = tile_dim ** 2                    # tile size
+        assert self.P % self.ts == 0 and self.S % self.td == 0
+        self.T = self.P // self.ts                 # #tiles
+        self.U = tile_comp_size                    # pooled ctx per tile
+        self.c = C_dim
+        self.K = self.T * self.U + self.R
+
+        # --- Q/K/V + pooling heads
+        self.logit   = no_wd(nn.Linear(dim, self.U, bias=False))
+        self.w_to_C  = no_wd(nn.Linear(self.ts, C_dim, bias=False))
+        self.proj_q  = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
-        
-        self.cpb_mlp = CPB2D(num_heads)
 
-        self.attn_drop = attn_drop
-        self.out_drop = nn.Dropout(proj_drop)
-        self.return_cache = False        
+        assert attn_drop == 0.0, "attn_drop not implemented for flex_attention"
+        self.out_drop  = nn.Dropout(proj_drop)
+
+        # --- Precompute φ-features [N, K, 2] once (batch-independent)
+        feats = self._build_feats(P=self.P, R=self.R, S=self.S, td=self.td, U=self.U)
+        self.register_buffer("feats", feats, persistent=False)
+        
+        self.C_reg = torch.zeros(1, self.R, C_dim)      # [B, R, c]
+        self.K_t = torch.tensor(self.K)
+        self.R_t = torch.tensor(self.R)
+
+        # --- Tiny per-head MLP on concat([φx,φy], C) -> scalar bias
+        self.W1 = nn.Parameter(torch.randn(H, mlp_hidden, 2 + self.c))
+        self.b1 = nn.Parameter(torch.zeros(H, mlp_hidden))
+        self.W2 = nn.Parameter(torch.randn(H, mlp_hidden))
+
+        # --- Learnable per-head gate α∈[0,1], init near gate_init
+        a = math.log(gate_init / (1 - gate_init + 1e-8) + 1e-8)
+        self.alpha = nn.Parameter(torch.full((H,), float(a)))
+        self.return_cache = False
+    
+    def reset_parameters(self):
+        nn.init.trunc_normal_(self.W1, std=0.02)
+        nn.init.trunc_normal_(self.W2, std=0.02)
+
+    @torch.no_grad()
+    def _build_feats(self, P: int, R: int, S: int, td: int, U: int) -> torch.Tensor:
+        """
+        Build φ-features on patch→ctx block (Δx,Δy transformed), zeros elsewhere.
+        Returns feats: [N, K, 2] fp32 with only patch→ctx block non-zero.
+        """
+        ts = td * td
+        T = P // ts
+        K_ctx = T * U
+
+        N = R + P
+        K = R + K_ctx
+
+        ys = torch.linspace(-1.0, 1.0, S)
+        xs = torch.linspace(-1.0, 1.0, S)
+        GY, GX = torch.meshgrid(ys, xs, indexing="ij")
+        Qx = GX.reshape(-1)  # [P]
+        Qy = GY.reshape(-1)
+
+        Sh = S // td; Sw = S // td
+        subGX = GX.view(Sh, td, Sw, td).permute(0, 2, 1, 3).reshape(T, ts)  # [T, ts]
+        subGY = GY.view(Sh, td, Sw, td).permute(0, 2, 1, 3).reshape(T, ts)
+        Cx = subGX.mean(dim=1)                      # [T] (uniform tile centroid)
+        Cy = subGY.mean(dim=1)
+        Kx = Cx.repeat_interleave(U)                # [K_ctx]
+        Ky = Cy.repeat_interleave(U)
+
+        dx = Qx[:, None] - Kx[None, :]              # [P, K_ctx]
+        dy = Qy[:, None] - Ky[None, :]              # [P, K_ctx]
+        phix = torch.sign(dx) * torch.log1p(dx.abs())
+        phiy = torch.sign(dy) * torch.log1p(dy.abs())
+
+        feats = torch.zeros(N, K, 2)
+        feats[R:R+P, R:R+K_ctx, 0] = phix
+        feats[R:R+P, R:R+K_ctx, 1] = phiy
+        return feats.reshape(N * K, 2).contiguous()  # fp32; will be cast on use
 
     def forward(self, x: torch.Tensor):
         B, N, D = x.shape
         H, d, R = self.H, self.d, self.R
-        U, S, T, td, ts, c = self.U, self.S, self.T, self.td, self.ts, self.c
+        U, S, T, td, ts, K = self.U, self.S, self.T, self.td, self.ts, self.K
 
+        # ---- Tile ↦ soft pooled ctx (w, out)
         patch = x[:, R:, :]  # [B,P,D]
-        patch = patch.view(B, S // td, td, S // td, td, D)  # [B,S/td,td,S/td,td,D]
-        tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)  # [B, T, ts, D]
+        patch = patch.view(B, S // td, td, S // td, td, D)             # [B,S/td,td,S/td,td,D]
+        tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)   # [B, T, ts, D]
 
-        scores = self.logit(tiled)  # [B, T, ts, U]
+        scores = self.logit(tiled)                                     # [B, T, ts, U]
         w = F.softmax(scores.transpose(-1, -2).float(), dim=-1).to(scores.dtype)  # [B,T,U,ts]
-        out = torch.matmul(w, tiled)  # [B, T, U, D] 
-        ctx_learn = out.reshape(B, T*U, D)  # [B, T*U, D]
+        ctx_learn = torch.matmul(w, tiled) .reshape(B, T * U, D)                           # [B, T*U, D]
+        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)               # [B, K, D]
+        assert ctx.size(1) == self.K
 
-        # prepend registers back
-        ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)  # [B, K, D]
-        K = ctx.size(1)
-
-        # keys/values from pooled contexts
-        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)  # [B,H,N,d]
-        
+        # ---- Q/K/V projections
+        q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)            # [B,H,N,d]
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
-        k, v = kv[0], kv[1]  # [B,H,K,d]
+        k, v = kv.unbind(0)                                            # [B,H,K,d]
 
-        # SDPA
-        x_attn = F.scaled_dot_product_attention(
-            q, k, v, 
-            attn_mask =self.cpb_mlp(self.w_to_C(w.view(B, T * U, c))),
-            dropout_p=self.attn_drop if self.training else 0.0
-        )  # [B,H,N,d]
+        # ---------- FlexAttention path (fused, bias inside score_mod) ----------
+        C = soft_clip01(self.w_to_C(w.view(B, T * U, ts).detach()))             # [B, K_ctx, c]
+        
+        W1, b1, W2 = self.W1, self.b1, self.W2
+        def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            # --- gate: only bias patch→ctx (no regs)
+            reg_gate = ((q_idx >= self.R_t) & (kv_idx >= self.R_t))  # bool tensor
 
+            # --- per-head gate α ∈ [0,1]
+            a = torch.sigmoid(self.alpha.index_select(0, h_idx.view(1)).squeeze(0))
+
+            # --- φ-features for (q,k) from flattened table
+            lin = (q_idx * self.K_t + kv_idx).view(1)
+            phi = self.feats.index_select(0, lin).squeeze(0)         # [2]
+
+            # --- C[b, k_ctx, :] with k_ctx = kv_idx - R (guarded for regs)
+            zero = kv_idx.new_zeros(())                              # 0 scalar (same device/dtype as idx)
+            k_ctx = kv_idx - self.R_t                                # may be negative if kv < R
+            k_sel = torch.where(reg_gate, k_ctx, zero).view(1)       # valid index in [0, K_ctx)
+            cvec  = C.index_select(0, b_idx.view(1)).squeeze(0) \
+                    .index_select(0, k_sel).squeeze(0)              # [c]
+
+            f = torch.cat([phi, cvec], dim=0)                        # [2 + c]
+
+            # --- tiny per-head MLP (single read per param tensor)
+            h1  = h_idx.view(1)
+            w1  = W1.index_select(0, h1).squeeze(0)                  # [HIDDEN, 2+c]
+            bb1 = b1.index_select(0, h1).squeeze(0)                  # [HIDDEN]
+            w2  = W2.index_select(0, h1).squeeze(0)                  # [HIDDEN]
+
+            hid  = torch.relu(w1 @ f + bb1)                          # [HIDDEN]
+            bias = (w2 * hid).sum()                                  # scalar
+
+            # Multiply by gates (bool→float cast is implicit)
+            return score + (a * bias) * reg_gate
+
+        x_attn = flex_attention(q, k, v, score_mod=score_mod)                   # [B,H,N,d]
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
         return out, None
     
@@ -354,7 +415,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv57(nn.Module):
+class ContextViTv58(nn.Module):
     def __init__(
         self,
         ckw,
@@ -454,78 +515,6 @@ class ContextViTv57(nn.Module):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
-        
-    @torch.no_grad()
-    def init_cpb_grid(self, P: int, R: int, td: int, U: int):
-        """
-        Build full CPB features and mask.
-
-        Args:
-            P  : #patch tokens (P = S*S)
-            R  : #reg/cls tokens (prepended on both query and key sides)
-            td : tile side (tile is td x td patches)
-            U  : #pooled context tokens per tile (share tile centroid here)
-            device: torch.device to place tensors on (optional)
-
-        Returns:
-            feats32: [N, K, 2] fp32  where only the patch→ctx block is nonzero
-            mask   : [N, K]   float (1 in patch→ctx block, 0 elsewhere)
-                    (use to gate the MLP output: bias = bias * mask)
-        """
-        assert int(P ** 0.5) ** 2 == P, "P must be a perfect square"
-        S = int(P ** 0.5)
-        assert S % td == 0 and U > 0 and R >= 0
-        device = next(self.parameters()).device
-
-        ts  = td * td
-        T   = P // ts                 # number of tiles
-        K_ctx = T * U
-
-        N = R + P                     # total queries
-        K = R + K_ctx                 # total keys
-
-        # ---- patch coords Qxy ∈ [-1,1]^2 (fp32)
-        ys = torch.linspace(-1.0, 1.0, S, device=device)
-        xs = torch.linspace(-1.0, 1.0, S, device=device)
-        GY, GX = torch.meshgrid(ys, xs, indexing="ij")
-        Qx = GX.reshape(-1)  # [P]
-        Qy = GY.reshape(-1)
-
-        # ---- tile-mean centroids Kxy (uniform mean of td×td)
-        Sh = S // td; Sw = S // td
-        subGX = GX.view(Sh, td, Sw, td).permute(0, 2, 1, 3).reshape(T, ts)  # [T, ts]
-        subGY = GY.view(Sh, td, Sw, td).permute(0, 2, 1, 3).reshape(T, ts)
-        Cx = subGX.mean(dim=1)                                            # [T]
-        Cy = subGY.mean(dim=1)
-        Kx = Cx.repeat_interleave(U)                                      # [K_ctx]
-        Ky = Cy.repeat_interleave(U)
-
-        # ---- φ-features for the patch→ctx block (fp32)
-        dx = Qx[:, None] - Kx[None, :]                                    # [P, K_ctx]
-        dy = Qy[:, None] - Ky[None, :]                                    # [P, K_ctx]
-        phix = torch.sign(dx) * torch.log1p(dx.abs())                     # [P, K_ctx]
-        phiy = torch.sign(dy) * torch.log1p(dy.abs())                     # [P, K_ctx]
-
-        # ---- assemble full feats [N, K, 2] with zeros elsewhere
-        feats = torch.zeros(N, K, 2, device=device)
-        feats[R:R+P, R:R+K_ctx, 0] = phix
-        feats[R:R+P, R:R+K_ctx, 1] = phiy
-        feats = feats.contiguous()
-
-        # ---- fixed mask to neutralize any reg row/col after MLP
-        mask = torch.zeros(N, K, device=device)
-        mask[R:, R:] = 1.0
-        mask = mask.contiguous()
-        return feats.to(dtype=None), mask.to(dtype=None)
-    
-    def init(self):
-        P, R, td, U = self.n_patches, self.tok_regs.size(1), self.ckw["tile_dim"], self.ckw["tile_comp_size"]
-        cpb_grid, mask = self.init_cpb_grid(P, R, td, U)
-        self.register_buffer("cpb_grid", cpb_grid, persistent=False)
-        self.register_buffer("mask", mask, persistent=False)
-        for blk in self.blocks:
-            blk.attn.cpb_mlp.feats = self.cpb_grid
-            blk.attn.cpb_mlp.mask = self.mask
         
     @contextmanager
     def return_caches(self):
