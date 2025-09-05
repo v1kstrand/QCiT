@@ -234,7 +234,7 @@ class ContextAttention(nn.Module):
             hid  = torch.relu(torch.mv(w1p, phi) + torch.mv(w1c, cvec) + bb1)  # [HID]
             bias = torch.dot(w2s, hid)                                         # scalar
 
-            return score + bias * reg_gate_f"""
+            return score + bias * reg_gate_f
 
 
         K_py = self.K
@@ -263,8 +263,70 @@ class ContextAttention(nn.Module):
             reg  = (q_idx >= R_py) & (kv_idx >= R_py)
             phi  = torch.where(reg, phi, phi - phi)
 
-            return score + phi
-        
+            return score + phi"""
+            
+        # ---------- FP32 master -> BF16 views for flex path ----------
+        q_dtype    = q.dtype  # typically torch.bfloat16 under autocast
+        W1_bf16    = self.W1.to(q_dtype)
+        b1_bf16    = self.b1.to(q_dtype)
+        W2_bf16    = self.W2.to(q_dtype)
+        feats_bf16 = self.feats.to(q_dtype)        # [N*K, 2]
+        C_bf16     = C.to(q_dtype)                 # [B, K_ctx, c]
+
+        # pre-split first-layer weights once (avoid slice inside closure) + make contiguous
+        W1_phi_bf16 = W1_bf16[..., :2].contiguous()    # [H, HID, 2]
+        W1_c_bf16   = W1_bf16[..., 2:].contiguous()    # [H, HID, c]
+        feats_bf16  = feats_bf16.contiguous()
+        C_bf16      = C_bf16.contiguous()
+
+        # fold α into W2 once (removes an extra mul inside closure) + contiguous
+        a_bf16    = torch.sigmoid(self.alpha).to(q_dtype)         # [H]
+        W2_scaled = (a_bf16.view(-1, 1) * W2_bf16).contiguous()   # [H, HID]
+
+        # Python ints (avoid captured tensors)
+        K_py: int = self.K
+        R_py: int = self.R
+
+        def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            # --- gating predicate (scalar bool) ---
+            reg_bool = (q_idx >= R_py) & (kv_idx >= R_py)
+
+            # --- φ(q,k): scalarize to avoid vector×vector broadcasts ---
+            lin = (q_idx * K_py + kv_idx).view(1)                  # [1] int64
+            phi = feats_bf16.index_select(0, lin).squeeze(0)       # [2]
+            phi0, phi1 = phi[0], phi[1]                            # scalars
+
+            # --- C[b, k_ctx, :] guarded for regs (use 0 when false) ---
+            k_ctx = kv_idx - R_py
+            k_sel = torch.where(reg_bool, k_ctx, k_ctx - k_ctx).view(1)  # int64 [1]
+            cvec  = C_bf16.index_select(0, b_idx.view(1)).squeeze(0) \
+                        .index_select(0, k_sel).squeeze(0)         # [c_dim] with c_dim==3
+
+            # --- per-head params ---
+            h1  = h_idx.view(1)
+            w1p = W1_phi_bf16.index_select(0, h1).squeeze(0)       # [HID, 2]
+            w1c = W1_c_bf16.index_select(0, h1).squeeze(0)         # [HID, c_dim]
+            bb1 = b1_bf16.index_select(0, h1).squeeze(0)           # [HID]
+            w2s = W2_scaled.index_select(0, h1).squeeze(0)         # [HID]
+
+            # --- First layer: scalarized φ-part ---
+            hid_pre = bb1 + w1p[:, 0] * phi0 + w1p[:, 1] * phi1    # [HID]
+
+            # --- c-part: UNROLL EXACTLY 3 (avoid broadcast/expand) ---
+            hid_pre = hid_pre + w1c[:, 0] * cvec[0]
+            hid_pre = hid_pre + w1c[:, 1] * cvec[1]
+            hid_pre = hid_pre + w1c[:, 2] * cvec[2]
+
+            # --- activation ---
+            hid  = torch.relu(hid_pre)                              # [HID]
+
+            # --- bias via elementwise mul + sum (more compiler-friendly than dot) ---
+            bias = (w2s * hid).sum()                                # scalar
+
+            # --- additive gate (avoid bias * gate multiply) ---
+            bias_gated = torch.where(reg_bool, bias, bias - bias)
+
+            return score + bias_gated
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
