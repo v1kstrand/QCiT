@@ -235,9 +235,10 @@ class ContextAttention(nn.Module):
 
             return score + bias * reg_gate_f"""
 
+        a = torch.tensor(1.0).to(q.dtype)
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             # trivial pointwise op that leaves score unchanged
-            return score 
+            return score + a
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
