@@ -202,7 +202,7 @@ class ContextAttention(nn.Module):
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             # gate out any row/col that touches regs
-            reg_gate = ((q_idx >= R_t) & (kv_idx >= R_t))  # bool
+            reg_gate = ((q_idx >= R_t) & (kv_idx >= R_t))
 
             # per-head gate α ∈ [0,1]
             a = torch.sigmoid(alpha_bf16.index_select(0, h_idx.view(1)).squeeze(0))
@@ -215,7 +215,7 @@ class ContextAttention(nn.Module):
             k_ctx = kv_idx - R_t
             k_sel = torch.where(reg_gate, k_ctx, zero_idx).view(1)  # int64
             cvec = C_bf16.index_select(0, b_idx.view(1)).squeeze(0) \
-                          .index_select(0, k_sel).squeeze(0)        # [c]
+                        .index_select(0, k_sel).squeeze(0)        # [c]
 
             # per-head params (one read each)
             h1  = h_idx.view(1)
@@ -223,14 +223,18 @@ class ContextAttention(nn.Module):
             bb1 = b1_bf16.index_select(0, h1).squeeze(0)  # [HID]
             w2  = W2_bf16.index_select(0, h1).squeeze(0)  # [HID]
 
-            # first layer split (no concat)
+            # first layer split (no concat) via matvecs
             w1_phi = w1[:, :2]         # [HID, 2]
             w1_c   = w1[:, 2:]         # [HID, c]
+            hid = torch.relu(torch.mv(w1_phi, phi) + torch.mv(w1_c, cvec) + bb1)  # [HID]
 
-            hid  = torch.relu((w1_phi @ phi) + (w1_c @ cvec) + bb1)  # [HID]
-            bias = (w2 * hid).sum()                                  # scalar
+            # final dot (avoids elementwise mul + sum)
+            bias = torch.dot(w2.contiguous(), hid.contiguous())  # scalar
 
-            return score + (a * bias) * reg_gate
+            # cast gate to numeric to avoid dtype-mix in mul
+            reg_gate_f = reg_gate.to(score.dtype)
+
+            return score + (a * bias) * reg_gate_f
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
