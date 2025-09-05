@@ -241,19 +241,25 @@ class ContextAttention(nn.Module):
         R_py = self.R
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            # base scalar features
             lin  = q_idx * K_py + kv_idx
             idx  = torch.remainder(lin, 32)
             phi0 = idx.to(score.dtype) / 31
 
+            # simple per-head scaling (still scalar-only)
             sh_num = (h_idx & 3) + 1
             sh     = sh_num.to(score.dtype) / 4
             phi    = phi0 * sh                      # scalar
 
-            # NEW SINGLE OP: use torch.mv with degenerate 1x1 shapes
+            # previously-added SINGLE OP (kept): degenerate mv
             mat = phi.view(1, 1)                    # [1,1]
             vec = sh.view(1)                        # [1]
-            phi = torch.mv(mat, vec)[0]             # -> [1] -> scalar
+            phi = torch.mv(mat, vec)[0]             # -> scalar
 
+            # NEW SINGLE OP: dot on 1-element vectors (degenerate case)
+            phi = torch.dot(vec, vec)               # -> scalar
+
+            # additive gating
             reg  = (q_idx >= R_py) & (kv_idx >= R_py)
             phi  = torch.where(reg, phi, phi - phi)
 
