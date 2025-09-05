@@ -236,10 +236,24 @@ class ContextAttention(nn.Module):
             return score + bias * reg_gate_f"""
 
 
-        cap1_bf16 = torch.zeros(1, dtype=q.dtype, device=q.device).contiguous()
+        M = 16  # tiny LUT size; keep the single capture small
+        phi_lut_bf16 = torch.linspace(0, 1, steps=M, dtype=q.dtype, device=q.device).contiguous()  # [M]
+
+        # turn these into Python ints to avoid capturing tensors
+        K_py = int(self.K_t.item()) if isinstance(self.K_t, torch.Tensor) else int(self.K_t)
+        R_py = int(self.R_t.item()) if isinstance(self.R_t, torch.Tensor) else int(self.R_t)
+
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # uses the captured tensor but is algebraically a no-op
-            return score + cap1_bf16[0] - cap1_bf16[0]
+            # linear pair index, then fold into small LUT index (all scalar ops)
+            lin = q_idx * K_py + kv_idx
+            idx = torch.remainder(lin, M)                       # scalar int64
+            phi0 = phi_lut_bf16.index_select(0, idx.view(1)).squeeze(0)  # scalar
+
+            # OPTIONAL additive gating (uses only scalars + literal 0; no captured zeros)
+            reg = (q_idx >= R_py) & (kv_idx >= R_py)
+            phi0_gated = torch.where(reg, phi0, phi0 * 0)       # stays scalar; no broadcast
+
+            return score + phi0_gated
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
