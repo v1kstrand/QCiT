@@ -291,11 +291,13 @@ class ContextAttention(nn.Module):
             # --- gating predicate (scalar bool) ---
             reg_bool = (q_idx >= R_py) & (kv_idx >= R_py)
 
+            """
             # --- φ(q,k): scalarize to avoid vector×vector broadcasts ---
             lin = (q_idx * K_py + kv_idx).view(1)                  # [1] int64
             phi = feats_bf16.index_select(0, lin).squeeze(0)       # [2]
             phi0, phi1 = phi[0], phi[1]                            # scalars
-            """
+            
+            
             # --- C[b, k_ctx, :] guarded for regs (use 0 when false) ---
             k_ctx = kv_idx - R_py
             k_sel = torch.where(reg_bool, k_ctx, k_ctx - k_ctx).view(1)  # int64 [1]
