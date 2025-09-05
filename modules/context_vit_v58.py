@@ -294,8 +294,8 @@ class ContextAttention(nn.Module):
             
             # --- φ(q,k): scalarize to avoid vector×vector broadcasts ---
             lin = (q_idx * K_py + kv_idx).view(1)                  # [1] int64
-            """
             phi = feats_bf16.index_select(0, lin).squeeze(0)       # [2]
+            """
             phi0, phi1 = phi[0], phi[1]                            # scalars
             
             
