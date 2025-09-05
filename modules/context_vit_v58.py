@@ -16,9 +16,11 @@ from torch.nn.attention import SDPBackend
 import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention
 
+
 def no_wd(m: nn.Module) -> None:
     m.no_wd = True
     return m
+
 def no_init(m: nn.Module) -> None:
     m.no_init = True
     return m
@@ -75,7 +77,7 @@ class ContextAttention(nn.Module):
         C_dim: int = 3,
         tile_comp_size: int = 1,        # U
         tile_dim: int = 1,              # td
-        mlp_hidden: int = 16,            # tiny MLP width inside score_mod
+        mlp_hidden: int = 8,            # tiny MLP width inside score_mod
         gate_init: float = 0.05,        # initial α via sigmoid
     ):
         super().__init__()
@@ -109,7 +111,7 @@ class ContextAttention(nn.Module):
 
         # --- Precompute φ-features [N, K, 2] once (batch-independent)
         feats = self._build_feats(P=self.P, R=self.R, S=self.S, td=self.td, U=self.U)
-        self.register_buffer("feats", feats, persistent=False)
+        self.register_buffer("feats", feats, persistent=False)  # same device/dtype as module
         
         self.C_reg = torch.zeros(1, self.R, C_dim)      # [B, R, c]
         self.K_t = torch.tensor(self.K)
@@ -209,16 +211,18 @@ class ContextAttention(nn.Module):
             cvec  = C.index_select(0, b_idx.view(1)).squeeze(0) \
                     .index_select(0, k_sel).squeeze(0)              # [c]
 
-            f = torch.cat([phi, cvec], dim=0)                        # [2 + c]
-
             # --- tiny per-head MLP (single read per param tensor)
             h1  = h_idx.view(1)
             w1  = W1.index_select(0, h1).squeeze(0)                  # [HIDDEN, 2+c]
             bb1 = b1.index_select(0, h1).squeeze(0)                  # [HIDDEN]
             w2  = W2.index_select(0, h1).squeeze(0)                  # [HIDDEN]
 
-            hid  = torch.relu(w1 @ f + bb1)                          # [HIDDEN]
-            bias = (w2 * hid).sum()                                  # scalar
+            # split first-layer weights to avoid concat
+            w1_phi = w1[:, :2]                                       # [HIDDEN, 2]
+            w1_c   = w1[:, 2:]                                       # [HIDDEN, c]
+
+            hid  = torch.relu((w1_phi @ phi) + (w1_c @ cvec) + bb1)  # [HIDDEN]
+            bias = (w2 * hid).sum()                                # scalar
 
             # Multiply by gates (bool→float cast is implicit)
             return score + (a * bias) * reg_gate
