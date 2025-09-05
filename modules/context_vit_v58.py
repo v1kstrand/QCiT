@@ -240,8 +240,8 @@ class ContextAttention(nn.Module):
         phi_lut_bf16 = torch.linspace(0, 1, steps=M, dtype=q.dtype, device=q.device).contiguous()  # [M]
 
         # turn these into Python ints to avoid capturing tensors
-        K_py = int(self.K_t.item()) if isinstance(self.K_t, torch.Tensor) else int(self.K_t)
-        R_py = int(self.R_t.item()) if isinstance(self.R_t, torch.Tensor) else int(self.R_t)
+        K_py = self.K
+        R_py = self.R
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
             # linear pair index, then fold into small LUT index (all scalar ops)
