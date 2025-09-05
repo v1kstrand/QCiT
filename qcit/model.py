@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from timm.loss import SoftTargetCrossEntropy
 
 from modules.vit import VisionTransformer as ViT
-from modules.context_vit_v55 import ContextViTv55
+from modules.context_vit_v58 import ContextViTv58
 from modules.context_vit_v57 import ContextViTv57
 
 from .config import NUM_CLASSES
@@ -17,7 +17,7 @@ from . import plot
 
 def get_arc(arc):
     return {"vit" : ViT,
-            "citv55" : ContextViTv55,
+            "citv58" : ContextViTv58,
             "citv57" : ContextViTv57,
             }[arc]
 
