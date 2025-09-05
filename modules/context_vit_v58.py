@@ -55,13 +55,14 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
 def soft_clip01(x: torch.Tensor, beta: float = 10.0) -> torch.Tensor:
     """
     Smooth clamp to [0, 1] using a softplus-based approximation of clamp.
-    beta: stiffness (↑beta -> sharper, closer to hard clamp)
+    Keeps the output in x.dtype (important under BF16 autocast).
     """
-    return (F.softplus(beta * (x)) - F.softplus(beta * (x - 1.0))) / beta
+    out = (F.softplus(beta * x) - F.softplus(beta * (x - 1.0))) / beta
+    return out.to(x.dtype)
+
 
 class ContextAttention(nn.Module):
     def __init__(
@@ -99,7 +100,7 @@ class ContextAttention(nn.Module):
         self.c = C_dim
         self.K = self.T * self.U + self.R  # total keys
 
-        # --- projections & pooling
+        # projections & pooling (params live in FP32 as master)
         self.logit   = no_wd(nn.Linear(dim, self.U, bias=False))
         self.w_to_C  = no_wd(nn.Linear(self.ts, C_dim, bias=False))
         self.proj_q  = nn.Linear(dim, dim, bias=qkv_bias)
@@ -109,21 +110,21 @@ class ContextAttention(nn.Module):
         assert attn_drop == 0.0, "attn_drop not implemented for flex_attention"
         self.out_drop = nn.Dropout(proj_drop)
 
-        # --- precompute φ (flattened to [N*K, 2]); stored as a buffer so dtype/device follow .to()
+        # φ table flattened to [N*K, 2] (buffer stays FP32 master; cast per-forward)
         feats = self._build_feats(P=self.P, R=self.R, S=self.S, td=self.td, U=self.U)
         self.register_buffer("feats", feats, persistent=False)
 
-        # --- index scalars as device buffers (moved with .to())
+        # GPU int64 index buffers (move with .to(device))
         self.register_buffer("K_t",     torch.tensor(self.K, dtype=torch.int64), persistent=False)
         self.register_buffer("R_t",     torch.tensor(self.R, dtype=torch.int64), persistent=False)
         self.register_buffer("zero_idx", torch.tensor(0,     dtype=torch.int64), persistent=False)
 
-        # --- tiny per-head MLP weights
+        # tiny per-head MLP (FP32 master)
         self.W1 = nn.Parameter(torch.randn(H, mlp_hidden, 2 + self.c) * 1e-2)
         self.b1 = nn.Parameter(torch.zeros(H, mlp_hidden))
         self.W2 = nn.Parameter(torch.randn(H, mlp_hidden) * 1e-2)
 
-        # --- per-head gate α (in [0,1] via sigmoid)
+        # per-head gate α (logit) in FP32 master
         a = math.log(gate_init / (1 - gate_init + 1e-8) + 1e-8)
         self.alpha = nn.Parameter(torch.full((H,), float(a)))
         self.return_cache = False
@@ -169,7 +170,7 @@ class ContextAttention(nn.Module):
         H, d, R = self.H, self.d, self.R
         U, S, T, td, ts, K = self.U, self.S, self.T, self.td, self.ts, self.K
 
-        # ---- pool per tile
+        # pool per tile
         patch = x[:, R:, :]
         patch = patch.view(B, S // td, td, S // td, td, D)
         tiled = patch.permute(0, 1, 3, 2, 4, 5).reshape(B, T, ts, D)
@@ -180,49 +181,56 @@ class ContextAttention(nn.Module):
         ctx = torch.cat([x[:, :R, :], ctx_learn], dim=1)
         assert ctx.size(1) == self.K
 
-        # ---- Q/K/V
+        # Q/K/V
         q = self.proj_q(x).view(B, N, H, d).transpose(1, 2)
         kv = self.proj_kv(ctx).reshape(B, K, 2, H, d).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
 
-        # ---- per-(b,k_ctx) descriptors (stop-grad as you wanted)
-        C = soft_clip01(self.w_to_C(w.view(B, T * U, ts).detach()))  # [B, K_ctx, c]
+        # per-(b,k_ctx) descriptors (detach to avoid direct loss path)
+        C = soft_clip01(self.w_to_C(w.view(B, T * U, ts).detach()))  # likely BF16 under autocast
 
-        W1, b1, W2 = self.W1, self.b1, self.W2
+        # ---------- FP32 master -> BF16 views for flex path ----------
+        q_dtype = q.dtype  # typically torch.bfloat16 under autocast
+        W1_bf16   = self.W1.to(q_dtype)
+        b1_bf16   = self.b1.to(q_dtype)
+        W2_bf16   = self.W2.to(q_dtype)
+        alpha_bf16= self.alpha.to(q_dtype)
+        feats_bf16= self.feats.to(q_dtype)
+        C_bf16    = C.to(q_dtype)
+
         K_t, R_t, zero_idx = self.K_t, self.R_t, self.zero_idx
-        feats_flat = self.feats  # [N*K, 2]
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # gate to exclude any row/col with regs
+            # gate out any row/col that touches regs
             reg_gate = ((q_idx >= R_t) & (kv_idx >= R_t))  # bool
 
             # per-head gate α ∈ [0,1]
-            a = torch.sigmoid(self.alpha.index_select(0, h_idx.view(1)).squeeze(0))
+            a = torch.sigmoid(alpha_bf16.index_select(0, h_idx.view(1)).squeeze(0))
 
             # φ(q,k) from flattened table
             lin = (q_idx * K_t + kv_idx).view(1)
-            phi = feats_flat.index_select(0, lin).squeeze(0)  # [2]
+            phi = feats_bf16.index_select(0, lin).squeeze(0)  # [2]
 
             # C[b, k_ctx, :] with k_ctx = kv_idx - R (guarded)
             k_ctx = kv_idx - R_t
             k_sel = torch.where(reg_gate, k_ctx, zero_idx).view(1)  # int64
-            cvec = C.index_select(0, b_idx.view(1)).squeeze(0) \
-                    .index_select(0, k_sel).squeeze(0)              # [c]
+            cvec = C_bf16.index_select(0, b_idx.view(1)).squeeze(0) \
+                          .index_select(0, k_sel).squeeze(0)        # [c]
 
-            # per-head params (single read each)
+            # per-head params (one read each)
             h1  = h_idx.view(1)
-            w1  = W1.index_select(0, h1).squeeze(0)  # [HIDDEN, 2+c]
-            bb1 = b1.index_select(0, h1).squeeze(0)  # [HIDDEN]
-            w2  = W2.index_select(0, h1).squeeze(0)  # [HIDDEN]
+            w1  = W1_bf16.index_select(0, h1).squeeze(0)  # [HID, 2+c]
+            bb1 = b1_bf16.index_select(0, h1).squeeze(0)  # [HID]
+            w2  = W2_bf16.index_select(0, h1).squeeze(0)  # [HID]
 
-            # split first layer to avoid concat op
-            w1_phi = w1[:, :2]         # [HIDDEN, 2]
-            w1_c   = w1[:, 2:]         # [HIDDEN, c]
+            # first layer split (no concat)
+            w1_phi = w1[:, :2]         # [HID, 2]
+            w1_c   = w1[:, 2:]         # [HID, c]
 
-            hid  = torch.relu((w1_phi @ phi) + (w1_c @ cvec) + bb1)  # [HIDDEN]
+            hid  = torch.relu((w1_phi @ phi) + (w1_c @ cvec) + bb1)  # [HID]
             bias = (w2 * hid).sum()                                  # scalar
 
-            return score + (a * bias) * reg_gate  # bool→numeric cast is implicit
+            return score + (a * bias) * reg_gate
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
