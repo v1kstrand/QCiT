@@ -249,13 +249,17 @@ class ContextAttention(nn.Module):
             sh     = sh_num.to(score.dtype) / 4
             phi    = phi0 * sh
 
-            # NEW SINGLE OP:
+            # previously-added single op
             phi = torch.relu(phi)
+
+            # NEW SINGLE OP: add a tiny per-head bias (just one extra '+')
+            bhead = (((h_idx >> 2) & 3) + 1).to(score.dtype) / 16  # {1/16..4/16}
+            phi = phi + bhead
 
             reg  = (q_idx >= R_py) & (kv_idx >= R_py)
             phi  = torch.where(reg, phi, phi - phi)
 
-            return score + phi    
+            return score + phi 
         
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
