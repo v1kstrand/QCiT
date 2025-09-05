@@ -8,7 +8,7 @@ from timm.data import create_transform, Mixup
 
 from modules.utils import IdleMonitor, delete_in_parallel
 from .model import OuterModel
-from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, torch_config_v1, torch_config_v2
+from .config import MEAN, STD, WORKERS, NUM_CLASSES, get_args, torch_config_v1, torch_config_v2, AMP_DTYPE
 from .data import HFImageDataset
 from .train_utils import init_model, OptScheduler, dump_args, set_ema_sd
 from .utils import plot_data, reset
@@ -111,7 +111,8 @@ def load_model(args):
     models = nn.ModuleDict()
     schedulers = {}
     for name in args.models:
-        models[name] = m = OuterModel(args, name).cuda()
+        models[name] = m = OuterModel(args, name)
+        m = m.to("cuda", dtype=AMP_DTYPE)
 
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         for k, v in args.opt["default"].items():
