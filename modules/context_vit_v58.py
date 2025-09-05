@@ -128,6 +128,7 @@ class ContextAttention(nn.Module):
         a = math.log(gate_init / (1 - gate_init + 1e-8) + 1e-8)
         self.alpha = nn.Parameter(torch.full((H,), float(a)))
         self.return_cache = False
+        self.M_py   = 32
 
     def reset_parameters(self):
         nn.init.trunc_normal_(self.W1, std=0.02)
@@ -236,18 +237,22 @@ class ContextAttention(nn.Module):
             return score + bias * reg_gate_f"""
 
 
-        M = 16  # tiny LUT size; keep the single capture small
-        phi_lut_bf16 = torch.linspace(0, 1, steps=M, dtype=q.dtype, device=q.device).contiguous()  # [M]
-
         # turn these into Python ints to avoid capturing tensors
         K_py = self.K
         R_py = self.R
-
+                        # Python int (procedural φ period)
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            lin = q_idx * K_py + kv_idx
-            idx = torch.remainder(lin, M)
-            phi0 = phi_lut_bf16.index_select(0, idx.view(1)).squeeze(0)
-            return score + phi0
+            # scalar math only; no captured tensors or floats
+            lin  = q_idx * K_py + kv_idx          # int64 scalar tensor
+            idx  = torch.remainder(lin, 32)       # int64 scalar tensor (period = 32)
+            phi0 = idx.to(score.dtype) / 31       # inline integer scale; no float capture
+
+            # additive gating (no bool*float mul, no captured zeros)
+            reg  = (q_idx >= R_py) & (kv_idx >= R_py)
+            phi0 = torch.where(reg, phi0, phi0 - phi0)
+
+            return score + phi0        
+        
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
