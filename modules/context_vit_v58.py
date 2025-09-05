@@ -308,11 +308,11 @@ class ContextAttention(nn.Module):
             w1c = W1_c_bf16.index_select(0, h1).squeeze(0)         # [HID, c_dim]
             bb1 = b1_bf16.index_select(0, h1).squeeze(0)           # [HID]
             w2s = W2_scaled.index_select(0, h1).squeeze(0)         # [HID]
-
+            """
             # --- First layer: scalarized φ-part ---
             hid_pre = bb1 + w1p[:, 0] * phi0 + w1p[:, 1] * phi1    # [HID]
 
-            """
+            
             # --- c-part: UNROLL EXACTLY 3 (avoid broadcast/expand) ---
             hid_pre = hid_pre + w1c[:, 0] * cvec[0]
             hid_pre = hid_pre + w1c[:, 1] * cvec[1]
