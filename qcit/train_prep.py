@@ -190,6 +190,11 @@ def prep_training(dict_args, exp):
     if args.detect_anomaly:
         print("DEBUG: torch.autograd.set_detect_anomaly Is Activated")
         torch.autograd.set_detect_anomaly(args.detect_anomaly)
+        
+    print("DEBUG: Anomaly enabled?",
+        torch.is_anomaly_enabled() if hasattr(torch, "is_anomaly_enabled")
+        else torch.autograd._is_anomaly_enabled())
+    print("Compiled autograd enabled?", torch._C._get_compiled_autograd_enabled())
 
     data_dict = load_data(args)
     model_dict = load_model(args)
