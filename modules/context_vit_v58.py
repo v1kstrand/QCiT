@@ -240,18 +240,23 @@ class ContextAttention(nn.Module):
         # turn these into Python ints to avoid capturing tensors
         K_py = self.K
         R_py = self.R
-                        # Python int (procedural φ period)
+
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # scalar math only; no captured tensors or floats
-            lin  = q_idx * K_py + kv_idx          # int64 scalar tensor
-            idx  = torch.remainder(lin, 32)       # int64 scalar tensor (period = 32)
-            phi0 = idx.to(score.dtype) / 31       # inline integer scale; no float capture
+            # base (working) procedural φ
+            lin  = q_idx * K_py + kv_idx            # int64 scalar tensor
+            idx  = torch.remainder(lin, 32)         # int64 scalar tensor (period = 32)
+            phi0 = idx.to(score.dtype) / 31         # inline integer scale; no float capture
+
+            # EXTENSION: per-head scalar in {1/4, 2/4, 3/4, 4/4} (scalar-only, no captures)
+            sh_num = (h_idx & 3) + 1                # int64 scalar tensor (h_idx % 4 + 1)
+            sh     = sh_num.to(score.dtype) / 4     # convert to dtype; divide by int literal
+            phi    = phi0 * sh                      # scalar * scalar (safe pointwise)
 
             # additive gating (no bool*float mul, no captured zeros)
             reg  = (q_idx >= R_py) & (kv_idx >= R_py)
-            phi0 = torch.where(reg, phi0, phi0 - phi0)
+            phi  = torch.where(reg, phi, phi - phi)
 
-            return score + phi0        
+            return score + phi     
         
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
