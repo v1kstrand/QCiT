@@ -237,26 +237,25 @@ class ContextAttention(nn.Module):
             return score + bias * reg_gate_f"""
 
 
-        # turn these into Python ints to avoid capturing tensors
         K_py = self.K
         R_py = self.R
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # base (working) procedural φ
-            lin  = q_idx * K_py + kv_idx            # int64 scalar tensor
-            idx  = torch.remainder(lin, 32)         # int64 scalar tensor (period = 32)
-            phi0 = idx.to(score.dtype) / 31         # inline integer scale; no float capture
+            lin  = q_idx * K_py + kv_idx
+            idx  = torch.remainder(lin, 32)
+            phi0 = idx.to(score.dtype) / 31
 
-            # EXTENSION: per-head scalar in {1/4, 2/4, 3/4, 4/4} (scalar-only, no captures)
-            sh_num = (h_idx & 3) + 1                # int64 scalar tensor (h_idx % 4 + 1)
-            sh     = sh_num.to(score.dtype) / 4     # convert to dtype; divide by int literal
-            phi    = phi0 * sh                      # scalar * scalar (safe pointwise)
+            sh_num = (h_idx & 3) + 1
+            sh     = sh_num.to(score.dtype) / 4
+            phi    = phi0 * sh
 
-            # additive gating (no bool*float mul, no captured zeros)
+            # NEW SINGLE OP:
+            phi = torch.relu(phi)
+
             reg  = (q_idx >= R_py) & (kv_idx >= R_py)
             phi  = torch.where(reg, phi, phi - phi)
 
-            return score + phi     
+            return score + phi    
         
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
