@@ -235,28 +235,22 @@ class ContextAttention(nn.Module):
 
             return score + bias * reg_gate_f"""
 
-        q_dtype    = q.dtype
-        feats_bf16 = self.feats.to(q_dtype).contiguous()          # [N*K, 2]
-        s_head_bf16 = torch.tanh(self.alpha).to(q_dtype).contiguous()  # [H] (any [H] scalar vector works)
-
-        zero_bf16 = q.new_zeros(())                               # BF16 scalar 0
-        K_t, R_t, zero_idx = self.K_t, self.R_t, self.zero_idx    # int64 buffers
+        q_dtype = q.dtype
+        head_bias_bf16 = self.alpha.to(q_dtype).contiguous()   # [H] per-head scalar bias
+        zero_bf16 = q.new_zeros(())                           # BF16 scalar 0
+        R_t = self.R_t                                        # int64 buffer (only if gating kept)
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # optional gate: only add bias on (patch,patch) interactions
+            # OPTIONAL gate: only add bias on (patch,patch) interactions
             reg_bool = ((q_idx >= R_t) & (kv_idx >= R_t))
 
-            # φ(q,k): use only first coord as scalar (no vector ops)
-            lin  = (q_idx * K_t + kv_idx).view(1)
-            phi0 = feats_bf16.index_select(0, lin).squeeze(0)[0]   # scalar
+            # per-head scalar bias (no vector math)
+            b = head_bias_bf16.index_select(0, h_idx.view(1)).squeeze(0)  # scalar
 
-            # per-head scalar weight
-            sh   = s_head_bf16.index_select(0, h_idx.view(1)).squeeze(0)  # scalar
+            # additive gate via where (avoid mul by bool); remove gating to be even lighter
+            b_gated = torch.where(reg_bool, b, zero_bf16)
 
-            bias = sh * phi0                                        # scalar
-            bias_gated = torch.where(reg_bool, bias, zero_bf16)     # additive gate (no mul by bool)
-
-            return score + bias_gated
+            return score + b_gated
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
