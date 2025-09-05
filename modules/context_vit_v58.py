@@ -236,10 +236,10 @@ class ContextAttention(nn.Module):
             return score + bias * reg_gate_f"""
 
 
-        zero_bf16 = q.new_zeros(())
+        cap1_bf16 = torch.zeros(1, dtype=q.dtype, device=q.device).contiguous()
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # trivial pointwise op that leaves score unchanged
-            return score + zero_bf16
+            # uses the captured tensor but is algebraically a no-op
+            return score + cap1_bf16[0] - cap1_bf16[0]
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
