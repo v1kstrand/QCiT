@@ -189,7 +189,7 @@ class ContextAttention(nn.Module):
         # per-(b,k_ctx) descriptors (detach to avoid direct loss path)
         C = soft_clip01(self.w_to_C(w.view(B, T * U, ts).detach()))  # likely BF16 under autocast
 
-        # ---------- FP32 master -> BF16 views for flex path ----------
+        """# ---------- FP32 master -> BF16 views for flex path ----------
         q_dtype    = q.dtype  # typically torch.bfloat16 under autocast
         W1_bf16    = self.W1.to(q_dtype)
         b1_bf16    = self.b1.to(q_dtype)
@@ -233,7 +233,30 @@ class ContextAttention(nn.Module):
             hid  = torch.relu(torch.mv(w1p, phi) + torch.mv(w1c, cvec) + bb1)  # [HID]
             bias = torch.dot(w2s, hid)                                         # scalar
 
-            return score + bias * reg_gate_f
+            return score + bias * reg_gate_f"""
+
+        q_dtype    = q.dtype
+        feats_bf16 = self.feats.to(q_dtype).contiguous()          # [N*K, 2]
+        s_head_bf16 = torch.tanh(self.alpha).to(q_dtype).contiguous()  # [H] (any [H] scalar vector works)
+
+        zero_bf16 = q.new_zeros(())                               # BF16 scalar 0
+        K_t, R_t, zero_idx = self.K_t, self.R_t, self.zero_idx    # int64 buffers
+
+        def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
+            # optional gate: only add bias on (patch,patch) interactions
+            reg_bool = ((q_idx >= R_t) & (kv_idx >= R_t))
+
+            # φ(q,k): use only first coord as scalar (no vector ops)
+            lin  = (q_idx * K_t + kv_idx).view(1)
+            phi0 = feats_bf16.index_select(0, lin).squeeze(0)[0]   # scalar
+
+            # per-head scalar weight
+            sh   = s_head_bf16.index_select(0, h_idx.view(1)).squeeze(0)  # scalar
+
+            bias = sh * phi0                                        # scalar
+            bias_gated = torch.where(reg_bool, bias, zero_bf16)     # additive gate (no mul by bool)
+
+            return score + bias_gated
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
