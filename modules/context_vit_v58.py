@@ -302,13 +302,14 @@ class ContextAttention(nn.Module):
             cvec  = C_bf16.index_select(0, b_idx.view(1)).squeeze(0) \
                         .index_select(0, k_sel).squeeze(0)         # [c_dim] with c_dim==3
 
+            """
             # --- per-head params ---
             h1  = h_idx.view(1)
             w1p = W1_phi_bf16.index_select(0, h1).squeeze(0)       # [HID, 2]
             w1c = W1_c_bf16.index_select(0, h1).squeeze(0)         # [HID, c_dim]
             bb1 = b1_bf16.index_select(0, h1).squeeze(0)           # [HID]
             w2s = W2_scaled.index_select(0, h1).squeeze(0)         # [HID]
-            """
+            
             # --- First layer: scalarized φ-part ---
             hid_pre = bb1 + w1p[:, 0] * phi0 + w1p[:, 1] * phi1    # [HID]
 
