@@ -75,7 +75,7 @@ class ContextAttention(nn.Module):
         C_dim: int = 3,
         tile_comp_size: int = 1,        # U
         tile_dim: int = 1,              # td
-        mlp_hidden: int = 8,            # tiny MLP width inside score_mod
+        mlp_hidden: int = 16,            # tiny MLP width inside score_mod
         gate_init: float = 0.05,        # initial α via sigmoid
     ):
         super().__init__()
