@@ -244,16 +244,10 @@ class ContextAttention(nn.Module):
         R_py = self.R
 
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # linear pair index, then fold into small LUT index (all scalar ops)
             lin = q_idx * K_py + kv_idx
-            idx = torch.remainder(lin, M)                       # scalar int64
-            phi0 = phi_lut_bf16.index_select(0, idx.view(1)).squeeze(0)  # scalar
-
-            # OPTIONAL additive gating (uses only scalars + literal 0; no captured zeros)
-            reg = (q_idx >= R_py) & (kv_idx >= R_py)
-            phi0_gated = torch.where(reg, phi0, phi0 * 0)       # stays scalar; no broadcast
-
-            return score + phi0_gated
+            idx = torch.remainder(lin, M)
+            phi0 = phi_lut_bf16.index_select(0, idx.view(1)).squeeze(0)
+            return score + phi0
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
