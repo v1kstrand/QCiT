@@ -235,22 +235,10 @@ class ContextAttention(nn.Module):
 
             return score + bias * reg_gate_f"""
 
-        q_dtype = q.dtype
-        head_bias_bf16 = self.alpha.to(q_dtype).contiguous()   # [H] per-head scalar bias
-        zero_bf16 = q.new_zeros(())                           # BF16 scalar 0
-        R_t = self.R_t                                        # int64 buffer (only if gating kept)
-
+        zero_bf16 = q.new_zeros(())
         def score_mod(score, b_idx, h_idx, q_idx, kv_idx):
-            # OPTIONAL gate: only add bias on (patch,patch) interactions
-            reg_bool = ((q_idx >= R_t) & (kv_idx >= R_t))
-
-            # per-head scalar bias (no vector math)
-            b = head_bias_bf16.index_select(0, h_idx.view(1)).squeeze(0)  # scalar
-
-            # additive gate via where (avoid mul by bool); remove gating to be even lighter
-            b_gated = torch.where(reg_bool, b, zero_bf16)
-
-            return score + b_gated
+            # trivial pointwise op that leaves score unchanged
+            return score + zero_bf16
 
         x_attn = flex_attention(q, k, v, score_mod=score_mod)
         out = self.out_drop(self.proj_out(x_attn.transpose(1, 2).reshape(B, N, D)))
