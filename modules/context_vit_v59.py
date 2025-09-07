@@ -493,7 +493,7 @@ class ContextViTv59(nn.Module):
         P, td, U = self.n_patches, self.ckw["tile_dim"], self.ckw["tile_comp_size"]
         P_pos, tile_centers, u_pos = self.make_cpb_pos_tables(P, td, U)
         self.register_buffer("P_pos", P_pos, persistent=False)
-        self.register_buffer("tile_centers", tile_centers, persistent=False)
+        self.register_buffer("tile_centers", tile_centers, persistent=False, device=device)
         for blk in self.blocks:
             blk.attn.cpb_mlp.P_pos = self.P_pos
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
@@ -526,7 +526,7 @@ class ContextViTv59(nn.Module):
         T = Sh * Sw
         ts = td * td
 
-        device = next(self.parameters()).device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # --- Patch coords in [-1, 1]
         ys = torch.linspace(-1.0, 1.0, S, device=device, dtype=dtype)
