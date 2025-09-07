@@ -493,7 +493,7 @@ class ContextViTv59(nn.Module):
         P, td, U = self.n_patches, self.ckw["tile_dim"], self.ckw["tile_comp_size"]
         P_pos, tile_centers, u_pos = self.make_cpb_pos_tables(P, td, U)
         self.register_buffer("P_pos", P_pos, persistent=False)
-        self.register_buffer("tile_centers", tile_centers, persistent=False, device=device)
+        self.register_buffer("tile_centers", tile_centers, persistent=False)
         for blk in self.blocks:
             blk.attn.cpb_mlp.P_pos = self.P_pos
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
