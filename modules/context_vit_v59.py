@@ -498,8 +498,6 @@ class ContextViTv59(nn.Module):
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
             blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos)
 
-        
-        
     @torch.no_grad()
     def make_cpb_pos_tables(
         self,
@@ -551,7 +549,7 @@ class ContextViTv59(nn.Module):
         # last channel stays 0 (important so spread is unaffected)
 
         # --- Per-U learnable anchor (Δcx, Δcy, s), shared across tiles
-        u_pos = nn.Parameter(torch.zeros(1, U, 3, device=device, dtype=dtype))
+        u_pos = torch.zeros(1, U, 3, device=device, dtype=dtype)
         if init_u_offset != 0.0:
             u_pos.data[:, :, 0:2].fill_(init_u_offset)
         if init_u_spread != 0.0:
