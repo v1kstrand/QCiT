@@ -489,6 +489,7 @@ class ContextViTv59(nn.Module):
         trunc_normal_(self.tok_pos_emb, std=0.02)
         nn.init.normal_(self.tok_regs, std=1e-6)
         named_apply(init_weights_vit_timm, self)
+        
         P, td, U = self.n_patches, self.ckw["tile_dim"], self.ckw["tile_comp_size"]
         P_pos, tile_centers, u_pos = self.make_cpb_pos_tables(P, td, U)
         self.register_buffer("P_pos", P_pos, persistent=False)
@@ -496,7 +497,8 @@ class ContextViTv59(nn.Module):
         for blk in self.blocks:
             blk.attn.cpb_mlp.P_pos = self.P_pos
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
-            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos)
+            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos, device=next(self.parameters()).device)
+            
         
         
     @torch.no_grad()
