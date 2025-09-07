@@ -497,8 +497,8 @@ class ContextViTv59(nn.Module):
         for blk in self.blocks:
             blk.attn.cpb_mlp.P_pos = self.P_pos
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
-            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos, device=next(self.parameters()).device)
-            
+            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos)
+
         
         
     @torch.no_grad()
