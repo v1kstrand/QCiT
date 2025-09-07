@@ -450,8 +450,8 @@ class ContextViTv59(nn.Module):
         ckw["num_regs"] = self.n_registers + 1
         self.n_patches = self.patch_embed.n_patches
         self.tok_regs = nn.Parameter(torch.zeros(1, 1 + self.n_registers, embed_dim))
-        ckw["num_tokens"] = num_tokens = 1 + self.n_registers + self.n_patches
-        self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
+        ckw["num_tokens"] = 1 + self.n_registers + self.n_patches
+        #self.tok_pos_emb = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
 
         norm_layer = partial(nn.LayerNorm, eps=1e-5)
 
@@ -486,8 +486,7 @@ class ContextViTv59(nn.Module):
             self.blocks[0].compile(backend="inductor", fullgraph=True, dynamic=False)
         
     def init_weights(self):
-        trunc_normal_(self.tok_pos_emb, std=0.02)
-        nn.init.normal_(self.tok_regs, std=1e-6)
+        nn.init.normal_(self.tok_regs, std=0.02)
         named_apply(init_weights_vit_timm, self)
         
         P, td, U = self.n_patches, self.ckw["tile_dim"], self.ckw["tile_comp_size"]
