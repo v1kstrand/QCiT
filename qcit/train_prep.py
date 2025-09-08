@@ -112,7 +112,6 @@ def load_model(args):
     schedulers = {}
     for name in args.models:
         models[name] = m = OuterModel(args, name).cuda()
-        #m = m.to("cuda", dtype=AMP_DTYPE)
 
         opt_args = args.opt[name] if name in args.opt else args.opt["default"]
         for k, v in args.opt["default"].items():

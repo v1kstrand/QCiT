@@ -86,7 +86,6 @@ class CPB2D(nn.Module):
     def set_dtype(self, dtype: torch.dtype):
         self.P_pos = self.P_pos.to(dtype)
         self.tile_centers = self.tile_centers.to(dtype)
-        self.u_pos = self.u_pos.to(dtype)
 
     def forward(self, dtype: torch.dtype) -> torch.Tensor:
         P = self.P_pos.size(0)
@@ -482,7 +481,7 @@ class ContextViTv59(nn.Module):
         for blk in self.blocks:
             blk.attn.cpb_mlp.P_pos = self.P_pos
             blk.attn.cpb_mlp.tile_centers = self.tile_centers
-            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos)
+            blk.attn.cpb_mlp.u_pos = nn.Parameter(u_pos.detach().clone())
 
     @torch.no_grad()
     def make_cpb_pos_tables(
