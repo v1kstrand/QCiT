@@ -371,7 +371,7 @@ def init_weights_vit_timm(module: nn.Module):
         module.reset_parameters()
 
 
-class ContextViTv59(nn.Module):
+class ContextViTv60(nn.Module):
     def __init__(
         self,
         ckw,

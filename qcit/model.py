@@ -47,7 +47,7 @@ class OuterModel(nn.Module):
     def __init__(self, args, name):
         super().__init__()
         self.args = args
-        self.name = name
+        self.name = names
         self.inner = InnerModel(args, name)
         self.backward = PushGrad(self)
         self.ema_sd = self.last_top1 = None
