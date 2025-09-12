@@ -158,7 +158,7 @@ def torch_config_v2(safe_config: bool = True):
     # CUTLASS autotune
     # Unsafe: tune *all* kernels (long compiles). Safe: cap to keep compiles reasonable.
     ind.cuda.cutlass_max_profiling_configs = None
-    ind.cuda.cutlass_backend_min_gemm_size = 32 * 32 * 32
+    #ind.cuda.cutlass_backend_min_gemm_size = 32 * 32 * 32
     ind.cuda.cutlass_op_denylist_regex = None
     print(f"INFO: Torch Config Set V2 ✔✔  Profile={'SAFE' if safe_config else 'UNSAFE/MAX'}")
 
