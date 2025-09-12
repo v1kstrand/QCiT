@@ -189,7 +189,6 @@ class ContextAttention(nn.Module):
 
         # --- Pad to make Se divisible by td (general td)
         pad_side = (td - (S % td)) % td
-        Se = S + pad_side
 
         # Pad logits with -inf so padded cells get 0 prob after softmax
         if pad_side:

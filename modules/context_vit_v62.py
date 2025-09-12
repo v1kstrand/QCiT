@@ -66,15 +66,16 @@ class CPB2D(nn.Module):
         self.R = int(R)
         self.H = int(H)
         # 3-dim in: [φ(dx), φ(dy), -s_k] → per-head bias
+        self.S = 2
         self.mlp = nn.Sequential(
-            nn.Linear(3, hidden),
+            nn.Linear(2 + self.S, hidden),
             nn.GELU(),
             nn.Linear(hidden, H),
         )
         self.reset_parameters()
 
         # to be populated by the parent model
-        self.S = 2
+        
         self.P_pos: torch.Tensor | None = None        # [P, 1, 3]
         self.tile_centers: torch.Tensor | None = None # [T, 1, 3]
         self.u_pos: nn.Parameter | None = None        # [1, U, 3]
@@ -513,7 +514,7 @@ class ContextViTv60(nn.Module):
         Qx = GX.reshape(-1)  # [P]
         Qy = GY.reshape(-1)
 
-        P_pos = torch.zeros(P, 1, 3, device=device, dtype=dtype)
+        P_pos = torch.zeros(P, 1, 4, device=device, dtype=dtype)
         P_pos[:, 0, 0] = Qx
         P_pos[:, 0, 1] = Qy
         # last channel stays 0
@@ -524,17 +525,17 @@ class ContextViTv60(nn.Module):
         Cx = subGX.mean(dim=1)  # [T]
         Cy = subGY.mean(dim=1)  # [T]
 
-        tile_centers = torch.zeros(T, 1, 3, device=device, dtype=dtype)
+        tile_centers = torch.zeros(T, 1, 4, device=device, dtype=dtype)
         tile_centers[:, 0, 0] = Cx
         tile_centers[:, 0, 1] = Cy
         # last channel stays 0 (important so spread is unaffected)
 
         # --- Per-U learnable anchor (Δcx, Δcy, s), shared across tiles
-        u_pos = torch.zeros(1, U, 3, device=device, dtype=dtype)
+        u_pos = torch.zeros(1, U, 4, device=device, dtype=dtype)
         if init_u_offset != 0.0:
             u_pos.data[:, :, 0:2].fill_(init_u_offset)
         if init_u_spread != 0.0:
-            u_pos.data[:, :, 2].fill_(init_u_spread)
+            u_pos.data[:, :, 2:].fill_(init_u_spread)
 
         return P_pos, tile_centers, u_pos
         
