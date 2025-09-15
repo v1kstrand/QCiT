@@ -74,7 +74,7 @@ class CPB2D(nn.Module):
         self.reset_parameters()
 
         # to be populated by the parent model
-        self.S = 2
+        self.S = 1
         self.P_pos: torch.Tensor | None = None        # [P, 1, 3]
         self.tile_centers: torch.Tensor | None = None # [T, 1, 3]
         self.u_pos: nn.Parameter | None = None        # [1, U, 3]
