@@ -69,7 +69,7 @@ class CPB2D(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(3, hidden),
             nn.GELU(),
-            nn.Linear(hidden, H),
+            nn.Linear(hidden, H, False),
         )
         self.reset_parameters()
 
@@ -151,6 +151,7 @@ class ContextAttention(nn.Module):
         self.proj_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.proj_kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.proj_out = nn.Linear(dim, dim, bias=proj_bias)
+        
         
         self.cpb_mlp = CPB2D(num_regs, num_heads)
 
