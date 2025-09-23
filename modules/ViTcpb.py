@@ -15,7 +15,6 @@ from torch import Tensor
 from torch.nn.attention import SDPBackend
 import torch.nn.functional as F
 from torch.nn.attention.flex_attention import flex_attention  # PyTorch >= 2.5
-torch.set_default_device('cuda')
 
 def no_wd(m: nn.Module) -> None:
     m.no_wd = True
