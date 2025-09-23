@@ -318,7 +318,7 @@ def init_weights_vit_timm(module: nn.Module):
 class ViTcpb(nn.Module):
     def __init__(
         self,
-        ckw = None,
+        ckw=None,
         img_size=224,
         patch_size=16,
         in_chans=3,
@@ -367,7 +367,8 @@ class ViTcpb(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
-        self.ckw = ckw or {}
+        ckw = ckw or {}
+        self.ckw = ckw
 
         self.patch_embed = embed_layer(
             img_size=img_size,
