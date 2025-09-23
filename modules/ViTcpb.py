@@ -417,8 +417,8 @@ class ViTcpb(nn.Module):
         named_apply(init_weights_vit_timm, self)
         self.make_cpb_pos_tables(self.N, self.R, num_heads)
         for blk in self.blocks:
-            blk.attn.cpb_mlp.rel_table = self.rel_table
-            blk.attn.cpb_mlp.idx_table = self.idx_table
+            blk.attn.cpb_mlp.rel_table = self.rel_table.cuda()
+            blk.attn.cpb_mlp.idx_table = self.idx_table.cuda()
         
         self.debug_compile = debug_compile
         
