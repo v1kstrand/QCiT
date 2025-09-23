@@ -444,7 +444,7 @@ class ViTcpb(nn.Module):
         dY, dX = torch.meshgrid(rng, rng, indexing="ij")
         rel = torch.stack([dY / max(S - 1, 1), dX / max(S - 1, 1)], -1).reshape(-1, 2)
         rel_table = torch.sign(rel) * torch.log1p(rel.abs())
-        self.register_buffer("rel_table", rel_table, persistent=False)  # [L,2]
+        self.register_buffer("rel_table", rel_table.cuda(), persistent=False)  # [L,2]
 
         # Precompute index table: {-1} (specials) or [0..L-1] for window<->window
         L = rel.shape[0]
@@ -461,7 +461,7 @@ class ViTcpb(nn.Module):
 
         idx = torch.full((N, N), 0, dtype=torch.long)  # sentinel -1
         idx[R:, R:] = l_idx 
-        self.register_buffer("idx_table", idx, persistent=False)  # [N,N], {-1 U [0..L-1]}
+        self.register_buffer("idx_table", idx.cuda(), persistent=False)  # [N,N], {-1 U [0..L-1]}
         
     @contextmanager
     def return_caches(self):
