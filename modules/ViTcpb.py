@@ -318,7 +318,7 @@ def init_weights_vit_timm(module: nn.Module):
 class ViTcpb(nn.Module):
     def __init__(
         self,
-        ckw,
+        ckw = None,
         img_size=224,
         patch_size=16,
         in_chans=3,
@@ -367,7 +367,7 @@ class ViTcpb(nn.Module):
         self.n_registers = n_registers
         self.return_cls_only = return_cls_only
         self.sdp_kernel = sdp_kernel
-        self.ckw = ckw
+        self.ckw = ckw or {}
 
         self.patch_embed = embed_layer(
             img_size=img_size,
@@ -412,7 +412,7 @@ class ViTcpb(nn.Module):
         self.norm = norm_layer(embed_dim)
         
         nn.init.normal_(self.tok_regs, std=0.02)
-        for blk in self.blocks:
+        for blk in self.blocks: 
             blk.attn.cpb_mlp.R = self.R
         named_apply(init_weights_vit_timm, self)
         self.make_cpb_pos_tables(self.N, self.R, num_heads)
