@@ -6,14 +6,13 @@ from functools import partial
 import math
 from contextlib import contextmanager
 
-#import os
-#os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-#os.environ["TORCHINDUCTOR_MAX_AUTOTUNE"] = "0"
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 #CUDA_LAUNCH_BLOCKING=1
-#os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 #Set TORCH_LOGS="+dynamo" and TORCHDYNAMO_VERBOSE=1 for more information
-#os.environ["TORCH_LOGS"] = "+dynamo"
-#os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+os.environ["TORCH_LOGS"] = "+dynamo"
+os.environ["TORCHDYNAMO_VERBOSE"] = "1"
 
 import torch
 import torch.nn as nn
@@ -101,6 +100,49 @@ class CPBtable(nn.Module):
         
     def forward(self):
         return
+    
+    def reset_parameters(self):
+        pass
+        
+
+class FlexAttentionCPB(nn.Module):
+    def __init__(self, H: int, hidden: int = 32):
+        super().__init__()
+        # Tiny MLP: R^2 -> R^H
+        self.mlp = nn.Sequential(
+            nn.Linear(2, hidden, bias=True),
+            nn.GELU(),
+            nn.Linear(hidden, H, bias=False),
+        )
+        self.H = H
+        self.gamma = nn.Parameter(torch.randn(H)) 
+        
+    def forward(self,mu):
+        """Return a callable used by flex_attention to inject CPB."""
+        
+        bt = self.mlp(self.table.rel)  # [L, H]
+        idx = self.table.idx  # [N,N], {-1} U [0..L-1
+        mu_q, mu_k = mu.unbind(2)
+        #gam_sig = torch.sigmoid(self.gamma)  # [H]
+        def score_mod(score, b, h, q, kv):
+            has_bias = (q >= self.r_cutoff) & (kv >= self.r_cutoff)
+            l2 = idx[q, kv]   # [...], in [0..L]
+            bias = bt[l2, h]
+            muq = mu_q[b, q, h]
+            muk = mu_k[b, kv, h]
+            w_gate = (muq + muk)
+            #return score + w_gate * bias
+            return score + has_bias * w_gate * bias
+            #return score + has_bias * bias
+        return score_mod
+    
+    def reset_parameters(self):
+        self.register_buffer("r_cutoff", torch.tensor(self.R, dtype=torch.int32), persistent=False)
+        with torch.no_grad():
+            nn.init.zeros_(self.mlp[-1].weight)  # start near zero bias
+            trunc_normal_(self.gamma, std=0.02)
+
+
 
 class Attention(nn.Module):
     def __init__(
@@ -111,35 +153,20 @@ class Attention(nn.Module):
         proj_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        hidden: int = 32
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.cpb_mlp = FlexAttentionCPB(num_heads)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        #self.mu = nn.Linear(dim, num_heads * 2, bias=qkv_bias)
+        self.mu = nn.Linear(dim, num_heads * 2, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
         self.return_cache = False
 
-        self.cpb_mlp = nn.Sequential(
-            nn.Linear(2, hidden, bias=True),
-            nn.GELU(),
-            nn.Linear(hidden, num_heads, bias=False),
-        )
-        #self.gamma = nn.Parameter(torch.randn(num_heads)) 
-
-    def reset_parameters(self):
-        self.register_buffer("r_cutoff", torch.tensor(self.R, dtype=torch.int32), persistent=False)
-        with torch.no_grad():
-            nn.init.zeros_(self.cpb_mlp[-1].weight)  # start near zero bias
-            trunc_normal_(self.gamma, std=0.02)
-        
-
     def forward(self, x: Tensor) -> Tensor:
-
         B, N, C = x.shape
         H, D  = self.num_heads, self.head_dim
 
@@ -147,25 +174,13 @@ class Attention(nn.Module):
         #    → [B, N, 3⋅H⋅D]
         #    → [B, 3, H, N, D]
         qkv = self.qkv(x).reshape(B, N, 3, H, D).permute(2, 0, 3, 1, 4)
-        #mu_q, mu_k = self.mu(x).to(x.dtype).reshape(B, N, 2, H).unbind(2)
+        mu = self.mu(x).reshape(B, N, 2, H)
+
         q, k, v = qkv[0], qkv[1], qkv[2]   # each is [B, H, N, D]
 
         # 2) scaled‐dot‐product‐attention with dropout
         #    (dropout is only active when self.training==True)
-
-        idx = self.table.idx  # [N,N], {-1} U [0..L-1
-        bt = self.cpb_mlp(self.table.rel).to(x.dtype)  # [L, H]
-        #gam = self.gamma.to(x.dtype)
-        def score_mod(score, b, h, q, kv):
-            has_bias = (q >= self.r_cutoff) & (kv >= self.r_cutoff)
-            l2 = idx[q, kv]   # [...], in [0..L]
-            bias = bt[l2, h]
-            #muq = mu_q[b, q, h]
-            #muk = mu_k[b, kv, h]
-            #w_gate = (muq + muk) * gam[h]
-            return score + has_bias * bias #* w_gate 
-
-        attn_out = flex_attention(q, k, v, score_mod=score_mod)
+        attn_out = flex_attention(q, k, v, score_mod=self.cpb_mlp(mu))
 
         # 3) re‐assemble heads → [B, N, C]
         attn_out = (attn_out
@@ -453,19 +468,21 @@ class ViTcpb(nn.Module):
 
         self.blocks = nn.ModuleList(blocks_list)
         self.norm = norm_layer(embed_dim)
-            
+        
+        for blk in self.blocks:
+            blk.attn.cpb_mlp.R = self.R
         nn.init.normal_(self.tok_regs, std=0.02)
+        named_apply(init_weights_vit_timm, self)
         cpb_table = CPBtable(self.N, self.R, num_heads)
         for blk in self.blocks:
-            blk.attn.R = self.R
-            blk.attn.table = cpb_table
-            blk.attn.table = cpb_table
-
-        named_apply(init_weights_vit_timm, self)
+            blk.attn.cpb_mlp.R = self.R
+            blk.attn.cpb_mlp.table = cpb_table
+            blk.attn.cpb_mlp.table = cpb_table
+        
         self.debug_compile = debug_compile
         
         if debug_compile:
-            self.blocks[0].compile(backend="inductor", dynamic=False)
+            self.blocks[0].compile(backend="inductor", fullgraph=True, dynamic=False, mode="max-autotune-no-cudagraphs")
 
         
     @contextmanager
