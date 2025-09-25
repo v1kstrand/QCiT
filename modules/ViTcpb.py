@@ -135,7 +135,7 @@ class Attention(nn.Module):
         self.register_buffer("r_cutoff", torch.tensor(self.R, dtype=torch.int32), persistent=False)
         with torch.no_grad():
             nn.init.zeros_(self.cpb_mlp[-1].weight)  # start near zero bias
-            trunc_normal_(self.gamma, std=0.02)
+            #trunc_normal_(self.gamma, std=0.02)
         
 
     def forward(self, x: Tensor) -> Tensor:
